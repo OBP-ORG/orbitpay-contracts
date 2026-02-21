@@ -227,7 +227,7 @@ impl GovernanceContract {
         if !has_admin(&env) {
             return Err(GovernanceError::NotInitialized);
         }
-        let stored_admin = get_admin(&env);
+        let stored_admin = get_admin(&env) ;
         if admin != stored_admin {
             return Err(GovernanceError::Unauthorized);
         }
@@ -249,6 +249,40 @@ impl GovernanceContract {
 
         env.events().publish(
             (symbol_short!("execute"),),
+            proposal_id,
+        );
+
+        Ok(())
+    }
+
+    /// Cancel a proposal. Only the original proposer can cancel.
+    /// Can only cancel Active proposals.
+    pub fn cancel_proposal(
+        env: Env,
+        proposer: Address,
+        proposal_id: u32,
+    ) -> Result<(), GovernanceError> {
+        if !has_admin(&env) {
+            return Err(GovernanceError::NotInitialized);
+        }
+        proposer.require_auth();
+
+        let mut proposal = get_proposal(&env, proposal_id)
+            .ok_or(GovernanceError::ProposalNotFound)?;
+
+        if proposal.proposer != proposer {
+            return Err(GovernanceError::Unauthorized);
+        }
+
+        if proposal.status != ProposalStatus::Active {
+            return Err(GovernanceError::VotingNotActive);
+        }
+
+        proposal.status = ProposalStatus::Cancelled;
+        set_proposal(&env, proposal_id, &proposal);
+
+        env.events().publish(
+            (symbol_short!("p_cancel"), proposer),
             proposal_id,
         );
 
