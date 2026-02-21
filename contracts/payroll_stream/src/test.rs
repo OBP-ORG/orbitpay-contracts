@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::{testutils::Address as _, testutils::Ledger, Address, Env, Vec};
+use soroban_sdk::{testutils::Address as _, testutils::Ledger, Address, Env, Vec, token};
 use types::StreamStatus;
 
 fn setup_env() -> (Env, Address, PayrollStreamContractClient<'static>) {
@@ -134,12 +134,29 @@ fn test_calculate_claimable() {
     assert_eq!(claimable, 5000); // 50% of 10000
 }
 
+fn create_token_contract<'a>(e: &Env, admin: &Address) -> token::StellarAssetClient<'a> {
+    let contract_addr = e.register_stellar_asset_contract(admin.clone());
+    token::StellarAssetClient::new(e, &contract_addr)
+}
+
+fn create_token_client<'a>(e: &Env, contract_addr: &Address) -> token::Client<'a> {
+    token::Client::new(e, contract_addr)
+}
+
 #[test]
 fn test_cancel_stream() {
     let (env, admin, client) = setup_env();
     let sender = Address::generate(&env);
     let recipient = Address::generate(&env);
-    let token = Address::generate(&env);
+    
+    // Setup token and mint to sender
+    let token_admin = Address::generate(&env);
+    let token_admin_client = create_token_contract(&env, &token_admin);
+    let token = token_admin_client.address.clone();
+    let token_client = create_token_client(&env, &token);
+    
+    token_admin_client.mint(&sender, &20000);
+    token_admin_client.mint(&client.address, &10000);
 
     client.initialize(&admin);
 
@@ -159,8 +176,105 @@ fn test_cancel_stream() {
     let stream = client.get_stream(&stream_id);
     assert_eq!(stream.status, StreamStatus::Active);
 
+    // Cancel immediately (before start or at start) - should refund all
     client.cancel_stream(&sender, &stream_id);
     
     let stream_cancelled = client.get_stream(&stream_id);
     assert_eq!(stream_cancelled.status, StreamStatus::Cancelled);
+    
+    // Recipient gets 0
+    assert_eq!(token_client.balance(&recipient), 0);
+    // Sender gets refund (assumes contract had funds)
+    // Contract had 10000, refunded 10000 to sender.
+    // Sender started with 20000. 
+    // (Wait, create_stream didn't transfer FROM sender yet in code, but I simulated contract holding 10000)
+    // So sender balance should be 20000 + 10000 = 30000? 
+    // No, sender starts with 20000. Contract starts with 10000 (minted directly).
+    // Refund adds 10000 to sender. Total 30000.
+    assert_eq!(token_client.balance(&sender), 30000);
+}
+
+#[test]
+fn test_cancel_stream_midway() {
+    let (env, admin, client) = setup_env();
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    
+    let token_admin = Address::generate(&env);
+    let token_admin_client = create_token_contract(&env, &token_admin);
+    let token = token_admin_client.address.clone();
+    let token_client = create_token_client(&env, &token);
+    
+    token_admin_client.mint(&client.address, &10000); // Simulate contract holding funds
+
+    client.initialize(&admin);
+
+    env.ledger().with_mut(|li| {
+        li.timestamp = 1000;
+    });
+
+    let stream_id = client.create_stream(
+        &sender,
+        &recipient,
+        &token,
+        &10000_i128,
+        &1000_u64, // Start
+        &2000_u64, // End
+    );
+
+    // Advance to 50%
+    env.ledger().with_mut(|li| {
+        li.timestamp = 1500;
+    });
+
+    client.cancel_stream(&sender, &stream_id);
+
+    let stream = client.get_stream(&stream_id);
+    assert_eq!(stream.status, StreamStatus::Cancelled);
+
+    // Recipient should have 5000
+    assert_eq!(token_client.balance(&recipient), 5000);
+    // Sender should have refund of 5000
+    assert_eq!(token_client.balance(&sender), 5000);
+}
+
+#[test]
+fn test_cancel_stream_after_end() {
+    let (env, admin, client) = setup_env();
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    
+    let token_admin = Address::generate(&env);
+    let token_admin_client = create_token_contract(&env, &token_admin);
+    let token = token_admin_client.address.clone();
+    let token_client = create_token_client(&env, &token);
+    
+    token_admin_client.mint(&client.address, &10000);
+
+    client.initialize(&admin);
+
+    env.ledger().with_mut(|li| {
+        li.timestamp = 1000;
+    });
+
+    let stream_id = client.create_stream(
+        &sender,
+        &recipient,
+        &token,
+        &10000_i128,
+        &1000_u64,
+        &2000_u64,
+    );
+
+    // Advance to end
+    env.ledger().with_mut(|li| {
+        li.timestamp = 2500;
+    });
+
+    client.cancel_stream(&sender, &stream_id);
+
+    // Recipient should have 10000
+    assert_eq!(token_client.balance(&recipient), 10000);
+    // Sender should have 0 refund
+    assert_eq!(token_client.balance(&sender), 0);
 }

@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, Address, Env, Vec, symbol_short};
+use soroban_sdk::{contract, contractimpl, Address, Env, Vec, symbol_short, token};
 
 mod errors;
 mod storage;
@@ -241,17 +241,18 @@ impl PayrollStreamContract {
 
         // Calculate what recipient is owed up to now
         let claimable = Self::calculate_claimable(&env, &stream);
-        let _refund = stream.total_amount - stream.claimed_amount - claimable;
+        let refund = stream.total_amount - stream.claimed_amount - claimable;
 
         stream.status = StreamStatus::Cancelled;
+        let contract_addr = env.current_contract_address();
+        let token_client = token::Client::new(&env, &stream.token);
 
-        // TODO: Transfer remaining claimable to recipient and refund to sender (contributor task SC-12)
-        // if claimable > 0 {
-        //     token_client.transfer(&contract_addr, &stream.recipient, &claimable);
-        // }
-        // if refund > 0 {
-        //     token_client.transfer(&contract_addr, &sender, &refund);
-        // }
+        if claimable > 0 {
+            token_client.transfer(&contract_addr, &stream.recipient, &claimable);
+        }
+        if refund > 0 {
+            token_client.transfer(&contract_addr, &sender, &refund);
+        }
 
         set_stream(&env, stream_id, &stream);
 
@@ -280,14 +281,27 @@ impl PayrollStreamContract {
         };
 
         let elapsed = effective_time - stream.start_time;
-        let total_accrued = stream.rate_per_second * (elapsed as i128);
+        // Check if stream is completed to avoid division by zero (though duration checked at creation)
+        if stream.end_time <= stream.start_time {
+             return 0; 
+        }
+        
+        // Recalculate based on total amount and duration to minimize rounding errors
+        // Instead of using stored rate_per_second which might have rounding loss
+        let duration = stream.end_time - stream.start_time;
+        let total_accrued = (stream.total_amount * (elapsed as i128)) / (duration as i128);
 
-        // Clamp to total_amount to handle rounding
+        // Clamp to total_amount
         let total_accrued = if total_accrued > stream.total_amount {
             stream.total_amount
         } else {
             total_accrued
         };
+        
+        // Ensure we don't return negative claimable if something is wrong with state
+        if total_accrued < stream.claimed_amount {
+            return 0;
+        }
 
         total_accrued - stream.claimed_amount
     }
