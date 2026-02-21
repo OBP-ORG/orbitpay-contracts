@@ -14,6 +14,8 @@ pub enum ProposalStatus {
     Executed,
     /// The proposal was cancelled by the proposer.
     Cancelled,
+    /// The proposal was not finalized within the grace period.
+    Expired,
 }
 
 /// The type of vote cast by a member.
@@ -74,6 +76,8 @@ pub struct GovernanceConfig {
     pub quorum_percentage: u32,
     /// Duration of the voting window in seconds.
     pub voting_duration: u64,
+    /// Buffer period after voting ends before auto-rejection (seconds).
+    pub grace_period: u64,
     /// Total number of DAO members.
     pub member_count: u32,
 }

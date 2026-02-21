@@ -22,7 +22,7 @@ fn test_initialize() {
     members.push_back(member1);
     members.push_back(member2);
 
-    client.initialize(&admin, &members, &51, &(7 * 24 * 60 * 60)); // 51% quorum, 7-day voting
+    client.initialize(&admin, &members, &51, &(7 * 24 * 60 * 60), &3600); // 51% quorum, 7-day voting, 1-hour grace
 
     assert_eq!(client.get_admin(), admin);
     assert_eq!(client.get_members().len(), 2);
@@ -39,7 +39,7 @@ fn test_create_proposal() {
     let mut members = Vec::new(&env);
     members.push_back(member1.clone());
 
-    client.initialize(&admin, &members, &51, &(7 * 24 * 60 * 60));
+    client.initialize(&admin, &members, &51, &(7 * 24 * 60 * 60), &3600);
 
     env.ledger().with_mut(|li| {
         li.timestamp = 1000;
@@ -73,7 +73,8 @@ fn test_voting_and_finalization() {
     members.push_back(member3.clone());
 
     let voting_duration = 7 * 24 * 60 * 60_u64;
-    client.initialize(&admin, &members, &51, &voting_duration);
+    let grace_period = 3600_u64;
+    client.initialize(&admin, &members, &51, &voting_duration, &grace_period);
 
     env.ledger().with_mut(|li| {
         li.timestamp = 1000;
@@ -118,7 +119,8 @@ fn test_quorum_not_reached() {
     members.push_back(member4.clone());
 
     let voting_duration = 7 * 24 * 60 * 60_u64;
-    client.initialize(&admin, &members, &51, &voting_duration);
+    let grace_period = 3600_u64;
+    client.initialize(&admin, &members, &51, &voting_duration, &grace_period);
 
     env.ledger().with_mut(|li| {
         li.timestamp = 1000;
@@ -143,10 +145,81 @@ fn test_quorum_not_reached() {
     assert_eq!(status, ProposalStatus::Rejected);
 }
 
-// TODO: Additional tests for contributors (see SC-25 in issues)
-// - test_duplicate_vote_rejected
-// - test_vote_after_period_expires
-// - test_execute_approved_proposal
-// - test_non_member_cannot_vote
-// - test_cancel_proposal
-// - test_add_and_remove_members
+#[test]
+fn test_proposal_expiration_live_status() {
+    let (env, admin, client) = setup_env();
+    let member1 = Address::generate(&env);
+    let token = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let mut members = Vec::new(&env);
+    members.push_back(member1.clone());
+
+    let voting_duration = 1000u64;
+    let grace_period = 500u64;
+    client.initialize(&admin, &members, &51, &voting_duration, &grace_period);
+
+    env.ledger().with_mut(|li| {
+        li.timestamp = 1000;
+    });
+
+    let proposal_id = client.create_proposal(
+        &member1,
+        &symbol_short!("test"),
+        &token,
+        &1000_i128,
+        &recipient,
+    );
+
+    // Still Active
+    assert_eq!(client.get_proposal_status(&proposal_id), ProposalStatus::Active);
+
+    // Past voting but within grace period -> Still Active (waiting for finalization)
+    env.ledger().with_mut(|li| {
+        li.timestamp = 1000 + voting_duration + 100;
+    });
+    assert_eq!(client.get_proposal_status(&proposal_id), ProposalStatus::Active);
+
+    // Past grace period -> Expired
+    env.ledger().with_mut(|li| {
+        li.timestamp = 1000 + voting_duration + grace_period + 1;
+    });
+    assert_eq!(client.get_proposal_status(&proposal_id), ProposalStatus::Expired);
+}
+
+#[test]
+fn test_finalize_auto_reject_after_grace_period() {
+    let (env, admin, client) = setup_env();
+    let member1 = Address::generate(&env);
+    let token = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let mut members = Vec::new(&env);
+    members.push_back(member1.clone());
+
+    let voting_duration = 1000u64;
+    let grace_period = 500u64;
+    client.initialize(&admin, &members, &51, &voting_duration, &grace_period);
+
+    env.ledger().with_mut(|li| {
+        li.timestamp = 1000;
+    });
+
+    let proposal_id = client.create_proposal(
+        &member1,
+        &symbol_short!("test"),
+        &token,
+        &1000_i128,
+        &recipient,
+    );
+
+    // Past grace period
+    env.ledger().with_mut(|li| {
+        li.timestamp = 1000 + voting_duration + grace_period + 1;
+    });
+
+    // Finalize should auto-reject even if it would have passed (if there were votes)
+    let status = client.finalize(&admin, &proposal_id);
+    assert_eq!(status, ProposalStatus::Rejected);
+    
+    let proposal = client.get_proposal(&proposal_id);
+    assert_eq!(proposal.status, ProposalStatus::Rejected);
+}

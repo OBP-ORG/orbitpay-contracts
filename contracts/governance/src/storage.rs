@@ -11,6 +11,7 @@ pub enum DataKey {
     Proposal(u32),
     QuorumPercentage,
     VotingDuration,
+    GracePeriod,
 }
 
 // ── Admin helpers ────────────────────────────────────────────────
@@ -81,4 +82,12 @@ pub fn get_voting_duration(env: &Env) -> u64 {
 
 pub fn set_voting_duration(env: &Env, duration: u64) {
     env.storage().instance().set(&DataKey::VotingDuration, &duration);
+}
+
+pub fn get_grace_period(env: &Env) -> u64 {
+    env.storage().instance().get(&DataKey::GracePeriod).unwrap_or(0)
+}
+
+pub fn set_grace_period(env: &Env, grace_period: u64) {
+    env.storage().instance().set(&DataKey::GracePeriod, &grace_period);
 }

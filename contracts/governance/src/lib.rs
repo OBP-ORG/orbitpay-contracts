@@ -10,6 +10,7 @@ use storage::{
     get_admin, has_admin, set_admin, get_members, set_members, is_member,
     get_proposal_count, set_proposal_count, get_proposal, set_proposal,
     get_quorum_percentage, set_quorum_percentage, get_voting_duration, set_voting_duration,
+    get_grace_period, set_grace_period,
 };
 use types::{Proposal, ProposalStatus, VoteChoice, VoteRecord, GovernanceConfig};
 
@@ -31,6 +32,7 @@ impl GovernanceContract {
         members: Vec<Address>,
         quorum_percentage: u32,
         voting_duration: u64,
+        grace_period: u64,
     ) -> Result<(), GovernanceError> {
         if has_admin(&env) {
             return Err(GovernanceError::AlreadyInitialized);
@@ -41,6 +43,7 @@ impl GovernanceContract {
         set_members(&env, &members);
         set_quorum_percentage(&env, quorum_percentage);
         set_voting_duration(&env, voting_duration);
+        set_grace_period(&env, grace_period);
         set_proposal_count(&env, 0);
 
         env.events().publish(
@@ -200,6 +203,14 @@ impl GovernanceContract {
             return Ok(ProposalStatus::Rejected);
         }
 
+        // Check grace period: auto-reject if expired
+        let grace_period = get_grace_period(&env);
+        if now > proposal.end_time + grace_period {
+            proposal.status = ProposalStatus::Rejected;
+            set_proposal(&env, proposal_id, &proposal);
+            return Ok(ProposalStatus::Rejected);
+        }
+
         // Check majority: more yes than no?
         if proposal.yes_votes > proposal.no_votes {
             proposal.status = ProposalStatus::Approved;
@@ -338,8 +349,28 @@ impl GovernanceContract {
         Ok(GovernanceConfig {
             quorum_percentage: get_quorum_percentage(&env),
             voting_duration: get_voting_duration(&env),
+            grace_period: get_grace_period(&env),
             member_count: members.len(),
         })
+    }
+
+    /// Get the current live status of a proposal.
+    pub fn get_proposal_status(env: Env, proposal_id: u32) -> Result<ProposalStatus, GovernanceError> {
+        let proposal = get_proposal(&env, proposal_id)
+            .ok_or(GovernanceError::ProposalNotFound)?;
+
+        if proposal.status != ProposalStatus::Active {
+            return Ok(proposal.status);
+        }
+
+        let now = env.ledger().timestamp();
+        let grace_period = get_grace_period(&env);
+        
+        if now > proposal.end_time + grace_period {
+            return Ok(ProposalStatus::Expired);
+        }
+
+        Ok(ProposalStatus::Active)
     }
 
     /// Get the admin address.
