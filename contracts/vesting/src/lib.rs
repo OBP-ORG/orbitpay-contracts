@@ -44,6 +44,7 @@ impl VestingContract {
     /// * `total_amount` - Total tokens to vest over the full period
     /// * `start_time` - When vesting begins (unix timestamp)
     /// * `cliff_duration` - Seconds before any tokens vest (cliff period)
+    /// * `cliff_amount` - Amount that vests immediately at cliff time
     /// * `total_duration` - Total seconds for the full vesting period
     /// * `label` - A descriptor like "team", "advisor", "seed"
     /// * `revocable` - Whether the grantor can revoke unvested tokens
@@ -55,6 +56,7 @@ impl VestingContract {
         total_amount: i128,
         start_time: u64,
         cliff_duration: u64,
+        cliff_amount: i128,
         total_duration: u64,
         label: Symbol,
         revocable: bool,
@@ -73,6 +75,9 @@ impl VestingContract {
         if cliff_duration >= total_duration {
             return Err(VestingError::InvalidCliffDuration);
         }
+        if cliff_amount < 0 || cliff_amount > total_amount {
+            return Err(VestingError::InvalidAmount);
+        }
 
         let schedule_id = get_schedule_count(&env);
         let schedule = VestingSchedule {
@@ -84,6 +89,7 @@ impl VestingContract {
             claimed_amount: 0,
             start_time,
             cliff_duration,
+            cliff_amount,
             total_duration,
             label,
             status: VestingStatus::Active,
@@ -224,9 +230,15 @@ impl VestingContract {
             return schedule.total_amount;
         }
 
-        // Linear vesting: proportional to time elapsed
-        let vested = (schedule.total_amount * (elapsed as i128)) / (schedule.total_duration as i128);
-        vested
+        // Cliff amount vests immediately at cliff
+        // Remaining amount (total - cliff_amount) vests linearly from cliff_duration to total_duration
+        let remaining_amount = schedule.total_amount - schedule.cliff_amount;
+        let vesting_duration = schedule.total_duration - schedule.cliff_duration;
+        let time_since_cliff = elapsed - schedule.cliff_duration;
+
+        let vested_linear = (remaining_amount * (time_since_cliff as i128)) / (vesting_duration as i128);
+        
+        schedule.cliff_amount + vested_linear
     }
 
     // ── Query Functions ──────────────────────────────────────────

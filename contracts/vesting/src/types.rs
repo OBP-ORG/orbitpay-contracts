@@ -37,6 +37,8 @@ pub struct VestingSchedule {
     pub start_time: u64,
     /// Duration (in seconds) of the cliff period. No tokens vest before this.
     pub cliff_duration: u64,
+    /// Amount of tokens that unlock immediately at the cliff.
+    pub cliff_amount: i128,
     /// Total vesting duration (in seconds) from start to fully vested.
     pub total_duration: u64,
     /// A label for this schedule (e.g., "advisor", "team", "seed").
