@@ -353,3 +353,59 @@ fn test_invalid_cliff_amount() {
 // - test_non_revocable_schedule_cannot_be_revoked
 // - test_double_claim_fails
 // - test_unauthorized_revoke
+
+#[test]
+fn test_claim_history() {
+    let (env, admin, client) = setup_env();
+    let grantor = Address::generate(&env);
+    let beneficiary = Address::generate(&env);
+    
+    let token_admin = Address::generate(&env);
+    let token_contract = create_token_contract(&env, &token_admin);
+    let _token_client = token::Client::new(&env, &token_contract.address);
+    token_contract.mint(&grantor, &100_000);
+
+    client.initialize(&admin);
+
+    let year = 365 * 24 * 60 * 60_u64;
+    let start_time = 1000_u64;
+    env.ledger().with_mut(|li| {
+        li.timestamp = start_time;
+    });
+
+    let schedule_id = client.create_schedule(
+        &grantor,
+        &beneficiary,
+        &token_contract.address,
+        &100_000_i128,
+        &start_time,
+        &year,
+        &25_000_i128,
+        &(4 * year),
+        &symbol_short!("legacy"),
+        &true,
+    );
+
+    // 1. Claim at 2 years
+    let time1 = start_time + (2 * year);
+    env.ledger().with_mut(|li| {
+        li.timestamp = time1;
+    });
+    client.claim(&beneficiary, &schedule_id);
+
+    // 2. Claim at 3 years
+    let time2 = start_time + (3 * year);
+    env.ledger().with_mut(|li| {
+        li.timestamp = time2;
+    });
+    client.claim(&beneficiary, &schedule_id);
+
+    let history = client.get_claim_history(&schedule_id);
+    assert_eq!(history.len(), 2);
+    
+    assert_eq!(history.get(0).unwrap().amount, 50_000);
+    assert_eq!(history.get(0).unwrap().timestamp, time1);
+    
+    assert_eq!(history.get(1).unwrap().amount, 25_000);
+    assert_eq!(history.get(1).unwrap().timestamp, time2);
+}

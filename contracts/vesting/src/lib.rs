@@ -10,8 +10,9 @@ use storage::{
     get_admin, has_admin, set_admin, get_schedule_count, set_schedule_count,
     get_schedule, set_schedule, add_grantor_schedule, add_beneficiary_schedule,
     get_grantor_schedules, get_beneficiary_schedules,
+    get_claim_history as storage_get_claim_history, add_claim_record,
 };
-use types::{VestingSchedule, VestingStatus, VestingProgress};
+use types::{VestingSchedule, VestingStatus, VestingProgress, ClaimRecord};
 
 #[contract]
 pub struct VestingContract;
@@ -156,8 +157,9 @@ impl VestingContract {
         }
 
         token_client.transfer(&env.current_contract_address(), &beneficiary, &claimable);
-
+ 
         set_schedule(&env, schedule_id, &schedule);
+        add_claim_record(&env, schedule_id, claimable, env.ledger().timestamp());
 
         env.events().publish(
             (symbol_short!("v_claim"), beneficiary.clone()),
@@ -282,6 +284,11 @@ impl VestingContract {
     /// Get all schedule IDs for a beneficiary.
     pub fn get_schedules_by_beneficiary(env: Env, beneficiary: Address) -> Vec<u32> {
         get_beneficiary_schedules(&env, &beneficiary)
+    }
+ 
+    /// Get the claim history for a vesting schedule.
+    pub fn get_claim_history(env: Env, schedule_id: u32) -> Vec<ClaimRecord> {
+        storage_get_claim_history(&env, schedule_id)
     }
 
     /// Get the total number of schedules created.
