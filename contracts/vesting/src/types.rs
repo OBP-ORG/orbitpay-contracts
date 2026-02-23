@@ -59,3 +59,13 @@ pub struct VestingProgress {
     pub claimable_amount: i128,
     pub status: VestingStatus,
 }
+
+/// A record of a single claim event.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClaimRecord {
+    /// The amount of tokens claimed.
+    pub amount: i128,
+    /// Unix timestamp when the claim occurred.
+    pub timestamp: u64,
+}

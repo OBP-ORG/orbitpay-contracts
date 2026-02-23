@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, Vec, symbol_short};
+use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, Vec, symbol_short, token};
 
 mod errors;
 mod storage;
@@ -10,8 +10,9 @@ use storage::{
     get_admin, has_admin, set_admin, get_schedule_count, set_schedule_count,
     get_schedule, set_schedule, add_grantor_schedule, add_beneficiary_schedule,
     get_grantor_schedules, get_beneficiary_schedules,
+    get_claim_history as storage_get_claim_history, add_claim_record,
 };
-use types::{VestingSchedule, VestingStatus, VestingProgress};
+use types::{VestingSchedule, VestingStatus, VestingProgress, ClaimRecord};
 
 #[contract]
 pub struct VestingContract;
@@ -84,7 +85,7 @@ impl VestingContract {
             id: schedule_id,
             grantor: grantor.clone(),
             beneficiary: beneficiary.clone(),
-            token,
+            token: token.clone(),
             total_amount,
             claimed_amount: 0,
             start_time,
@@ -96,8 +97,12 @@ impl VestingContract {
             revocable,
         };
 
-        // TODO: Transfer total_amount from grantor to contract (contributor task SC-16)
-        // token::Client::new(&env, &token).transfer(&grantor, &env.current_contract_address(), &total_amount);
+        let token_client = token::Client::new(&env, &token);
+        if token_client.balance(&grantor) < total_amount {
+            return Err(VestingError::InsufficientBalance);
+        }
+
+        token_client.transfer(&grantor, &env.current_contract_address(), &total_amount);
 
         set_schedule(&env, schedule_id, &schedule);
         set_schedule_count(&env, schedule_id + 1);
@@ -146,11 +151,15 @@ impl VestingContract {
             schedule.status = VestingStatus::FullyClaimed;
         }
 
-        // TODO: Transfer claimable to beneficiary (contributor task SC-17)
-        // token::Client::new(&env, &schedule.token)
-        //     .transfer(&env.current_contract_address(), &beneficiary, &claimable);
+        let token_client = token::Client::new(&env, &schedule.token);
+        if token_client.balance(&env.current_contract_address()) < claimable {
+            return Err(VestingError::InsufficientBalance);
+        }
 
+        token_client.transfer(&env.current_contract_address(), &beneficiary, &claimable);
+ 
         set_schedule(&env, schedule_id, &schedule);
+        add_claim_record(&env, schedule_id, claimable, env.ledger().timestamp());
 
         env.events().publish(
             (symbol_short!("v_claim"), beneficiary.clone()),
@@ -191,11 +200,13 @@ impl VestingContract {
         schedule.status = VestingStatus::Revoked;
         schedule.total_amount = vested; // Cap at vested amount
 
-        // TODO: Return unvested tokens to grantor (contributor task SC-18)
-        // if unvested > 0 {
-        //     token::Client::new(&env, &schedule.token)
-        //         .transfer(&env.current_contract_address(), &grantor, &unvested);
-        // }
+        if unvested > 0 {
+            let token_client = token::Client::new(&env, &schedule.token);
+            if token_client.balance(&env.current_contract_address()) < unvested {
+                return Err(VestingError::InsufficientBalance);
+            }
+            token_client.transfer(&env.current_contract_address(), &grantor, &unvested);
+        }
 
         set_schedule(&env, schedule_id, &schedule);
 
@@ -273,6 +284,11 @@ impl VestingContract {
     /// Get all schedule IDs for a beneficiary.
     pub fn get_schedules_by_beneficiary(env: Env, beneficiary: Address) -> Vec<u32> {
         get_beneficiary_schedules(&env, &beneficiary)
+    }
+ 
+    /// Get the claim history for a vesting schedule.
+    pub fn get_claim_history(env: Env, schedule_id: u32) -> Vec<ClaimRecord> {
+        storage_get_claim_history(&env, schedule_id)
     }
 
     /// Get the total number of schedules created.
