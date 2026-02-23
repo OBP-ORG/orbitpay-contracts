@@ -60,6 +60,9 @@ impl PayrollStreamContract {
         if end_time <= start_time {
             return Err(StreamError::InvalidDuration);
         }
+        if start_time < env.ledger().timestamp() {
+            return Err(StreamError::InvalidStartTime);
+        }
 
         let duration = end_time - start_time;
         let rate_per_second = total_amount / (duration as i128);
@@ -124,6 +127,9 @@ impl PayrollStreamContract {
             }
             if end_time <= start_time {
                 return Err(StreamError::InvalidDuration);
+            }
+            if start_time < env.ledger().timestamp() {
+                return Err(StreamError::InvalidStartTime);
             }
 
             let duration = end_time - start_time;

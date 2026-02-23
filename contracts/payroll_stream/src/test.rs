@@ -396,6 +396,87 @@ fn create_token_contract<'a>(e: &Env, admin: &Address) -> token::StellarAssetCli
     token::StellarAssetClient::new(e, &contract_addr)
 }
 
+#[test]
+fn test_cancel_after_partial_claim() {
+    let (env, admin, client) = setup_env();
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    
+    let token_admin = Address::generate(&env);
+    let token_contract = create_token_contract(&env, &token_admin);
+    let token_client = create_token_client(&env, &token_contract.address);
+    token_contract.mint(&sender, &10000);
+
+    client.initialize(&admin);
+
+    let start_time = 1000;
+    env.ledger().with_mut(|li| { li.timestamp = start_time; });
+    let stream_id = client.create_stream(&sender, &recipient, &token_contract.address, &10000, &start_time, &(start_time + 1000));
+
+    // 1. Advance to 25% (250s)
+    env.ledger().with_mut(|li| { li.timestamp = start_time + 250; });
+    client.claim(&recipient, &stream_id);
+    assert_eq!(token_client.balance(&recipient), 2500);
+
+    // 2. Advance to 50% (500s)
+    env.ledger().with_mut(|li| { li.timestamp = start_time + 500; });
+    
+    // 3. Sender cancels
+    client.cancel_stream(&sender, &stream_id);
+
+    // Verify:
+    // Recipient should have received the "unclaimed but accrued" 2,500 more.
+    assert_eq!(token_client.balance(&recipient), 5000);
+    // Sender should have received 5,000 refund (10,000 - 5,000 accrued).
+    assert_eq!(token_client.balance(&sender), 5000);
+
+    let stream = client.get_stream(&stream_id);
+    assert_eq!(stream.status, StreamStatus::Cancelled);
+}
+
+#[test]
+fn test_invalid_start_time() {
+    let (env, admin, client) = setup_env();
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    client.initialize(&admin);
+
+    env.ledger().with_mut(|li| { li.timestamp = 1000; });
+    
+    // Attempt to create stream starting in the past (999 < 1000)
+    let result = client.try_create_stream(&sender, &recipient, &token, &1000, &999, &2000);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_claim_multiple_times_progression() {
+    let (env, admin, client) = setup_env();
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    
+    let token_admin = Address::generate(&env);
+    let token_contract = create_token_contract(&env, &token_admin);
+    let token_client = create_token_client(&env, &token_contract.address);
+    token_contract.mint(&sender, &10000);
+
+    client.initialize(&admin);
+
+    let start_time = 1000;
+    env.ledger().with_mut(|li| { li.timestamp = start_time; });
+    let stream_id = client.create_stream(&sender, &recipient, &token_contract.address, &10000, &start_time, &(start_time + 1000));
+
+    for i in 1..=10 {
+        env.ledger().with_mut(|li| { li.timestamp = start_time + (i * 100); });
+        client.claim(&recipient, &stream_id);
+        assert_eq!(token_client.balance(&recipient), (i as i128) * 1000);
+    }
+
+    let stream = client.get_stream(&stream_id);
+    assert_eq!(stream.status, StreamStatus::Completed);
+}
+
 fn create_token_client<'a>(e: &Env, contract_addr: &Address) -> token::Client<'a> {
     token::Client::new(e, contract_addr)
 }
