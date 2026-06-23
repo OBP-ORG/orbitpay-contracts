@@ -36,6 +36,32 @@ pub struct VoteRecord {
     pub timestamp: u64,
 }
 
+/// A single entry in the snapshotted electorate: one member and their frozen weight.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MemberWeight {
+    pub member: Address,
+    pub weight: u128,
+}
+
+/// Immutable snapshot of governance parameters captured at proposal creation.
+///
+/// All vote-weight lookups and finalization checks use these frozen values so
+/// that subsequent admin changes (member additions/removals, weight updates,
+/// quorum tweaks) cannot alter the outcome of an in-flight proposal.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProposalSnapshot {
+    /// Quorum percentage required for the proposal to be valid (0-100).
+    pub quorum_percentage: u32,
+    /// Grace period in seconds after voting ends before the proposal auto-expires.
+    pub grace_period: u64,
+    /// Total voting weight across all eligible members at creation time.
+    pub total_weight: u128,
+    /// Eligible electorate with per-member weights frozen at creation time.
+    pub electorate: Vec<MemberWeight>,
+}
+
 /// A budget proposal requesting funds from the treasury.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -66,6 +92,8 @@ pub struct Proposal {
     pub start_time: u64,
     /// Timestamp when voting ends.
     pub end_time: u64,
+    /// Governance parameters and electorate frozen at proposal creation.
+    pub snapshot: ProposalSnapshot,
 }
 
 /// Configuration for the governance module.
