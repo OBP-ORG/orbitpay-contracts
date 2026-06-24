@@ -20,6 +20,8 @@ pub enum DataKey {
     Threshold,
     /// Running count of withdrawal proposals — stored in Instance storage.
     ProposalCount,
+    /// Signer set version — incremented on signer changes, stored in Instance storage.
+    SignerSetVersion,
     /// A specific withdrawal request — stored in Persistent storage.
     Withdrawal(u32),
 }
@@ -73,6 +75,28 @@ pub fn set_proposal_count(env: &Env, count: u32) {
     env.storage()
         .instance()
         .set(&DataKey::ProposalCount, &count);
+}
+
+// ── Signer set version helpers ───────────────────────────────────
+
+pub fn get_signer_set_version(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&DataKey::SignerSetVersion)
+        .unwrap()
+}
+
+pub fn set_signer_set_version(env: &Env, version: u32) {
+    env.storage()
+        .instance()
+        .set(&DataKey::SignerSetVersion, &version);
+}
+
+pub fn increment_signer_set_version(env: &Env) -> u32 {
+    let current = get_signer_set_version(env);
+    let new_version = current + 1;
+    set_signer_set_version(env, new_version);
+    new_version
 }
 
 // ── Withdrawal helpers ──────────────────────────────────────────

@@ -9,7 +9,8 @@ use errors::TreasuryError;
 use storage::{
     get_admin, get_proposal_count, get_signers, get_threshold, get_withdrawal, has_admin,
     set_admin, set_proposal_count, set_signers, set_threshold, set_withdrawal,
-    extend_instance_ttl, extend_withdrawal_ttl,
+    extend_instance_ttl, extend_withdrawal_ttl, get_signer_set_version, set_signer_set_version,
+    increment_signer_set_version,
 };
 use types::{TreasuryConfig, WithdrawalRequest, WithdrawalStatus};
 
@@ -41,12 +42,22 @@ impl TreasuryContract {
             return Err(TreasuryError::InvalidThreshold);
         }
 
+        // Validate that all signers are unique
+        for i in 0..signers.len() {
+            for j in (i + 1)..signers.len() {
+                if signers.get(i).unwrap() == signers.get(j).unwrap() {
+                    return Err(TreasuryError::DuplicateSigner);
+                }
+            }
+        }
+
         admin.require_auth();
 
         set_admin(&env, &admin);
         set_signers(&env, &signers);
         set_threshold(&env, threshold);
         set_proposal_count(&env, 0);
+        set_signer_set_version(&env, 0);
 
         extend_instance_ttl(&env);
 
@@ -111,8 +122,17 @@ impl TreasuryContract {
         }
 
         let proposal_id = get_proposal_count(&env);
+        let signer_set_version = get_signer_set_version(&env);
+        let threshold = get_threshold(&env);
         let mut approvals = Vec::new(&env);
         approvals.push_back(proposer.clone());
+
+        // If threshold is 1, the withdrawal is immediately approved
+        let status = if threshold == 1 {
+            WithdrawalStatus::Approved
+        } else {
+            WithdrawalStatus::Pending
+        };
 
         let request = WithdrawalRequest {
             id: proposal_id,
@@ -122,8 +142,9 @@ impl TreasuryContract {
             amount,
             memo,
             approvals,
-            status: WithdrawalStatus::Pending,
+            status,
             created_at: env.ledger().timestamp(),
+            signer_set_version,
         };
 
         set_withdrawal(&env, proposal_id, &request);
@@ -251,9 +272,15 @@ impl TreasuryContract {
         signers.push_back(new_signer.clone());
         set_signers(&env, &signers);
 
+        let new_version = increment_signer_set_version(&env);
+        let threshold = get_threshold(&env);
+
         extend_instance_ttl(&env);
 
-        env.events().publish((symbol_short!("s_add"),), new_signer);
+        env.events().publish(
+            (symbol_short!("s_add"), admin.clone(), new_signer.clone(), threshold, new_version),
+            (signers.len(),),
+        );
 
         Ok(())
     }
@@ -292,9 +319,14 @@ impl TreasuryContract {
 
         set_signers(&env, &new_signers);
 
+        let new_version = increment_signer_set_version(&env);
+
         extend_instance_ttl(&env);
 
-        env.events().publish((symbol_short!("s_remove"),), signer);
+        env.events().publish(
+            (symbol_short!("s_remove"), admin.clone(), signer.clone(), threshold, new_version),
+            (new_signers.len(),),
+        );
 
         Ok(())
     }
@@ -319,10 +351,14 @@ impl TreasuryContract {
 
         set_threshold(&env, new_threshold);
 
+        let signer_set_version = get_signer_set_version(&env);
+
         extend_instance_ttl(&env);
 
-        env.events()
-            .publish((symbol_short!("t_upd"),), new_threshold);
+        env.events().publish(
+            (symbol_short!("t_upd"), admin.clone(), new_threshold, signers.len(), signer_set_version),
+            (),
+        );
 
         Ok(())
     }

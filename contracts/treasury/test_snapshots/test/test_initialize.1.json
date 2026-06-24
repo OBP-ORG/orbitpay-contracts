@@ -102,6 +102,18 @@
                         "key": {
                           "vec": [
                             {
+                              "symbol": "SignerSetVersion"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 0
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
                               "symbol": "Signers"
                             }
                           ]

@@ -85,6 +85,7 @@ fn test_create_and_approve_withdrawal() {
     // First approval is automatic (proposer)
     let request = client.get_withdrawal(&proposal_id);
     assert_eq!(request.approvals.len(), 1);
+    assert_eq!(request.signer_set_version, 0);
 
     // Second signer approves
     client.approve_withdrawal(&signer2, &proposal_id);
@@ -322,6 +323,7 @@ fn test_execute_withdrawal_full_flow() {
     client.approve_withdrawal(&signer2, &proposal_id);
     let request = client.get_withdrawal(&proposal_id);
     assert_eq!(request.status, WithdrawalStatus::Approved);
+    assert_eq!(request.signer_set_version, 0);
 
     client.execute_withdrawal(&signer1, &proposal_id);
 
@@ -365,4 +367,124 @@ fn test_execute_withdrawal_insufficient_balance() {
     client.approve_withdrawal(&signer2, &proposal_id);
 
     client.execute_withdrawal(&signer1, &proposal_id);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #14)")]
+fn test_duplicate_signers_at_init_rejected() {
+    let (env, admin, client) = setup_env();
+    let signer1 = Address::generate(&env);
+    let mut signers = Vec::new(&env);
+    signers.push_back(signer1.clone());
+    signers.push_back(signer1.clone());
+
+    client.initialize(&admin, &signers, &2);
+}
+
+#[test]
+fn test_threshold_one_immediate_approval() {
+    let (env, admin, client) = setup_env();
+    let signer1 = Address::generate(&env);
+    let token = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let mut signers = Vec::new(&env);
+    signers.push_back(signer1.clone());
+
+    client.initialize(&admin, &signers, &1);
+
+    let proposal_id = client.create_withdrawal(
+        &signer1,
+        &token,
+        &recipient,
+        &1000_i128,
+        &symbol_short!("salary"),
+    );
+
+    let request = client.get_withdrawal(&proposal_id);
+    assert_eq!(request.status, WithdrawalStatus::Approved);
+    assert_eq!(request.approvals.len(), 1);
+    assert_eq!(request.signer_set_version, 0);
+}
+
+#[test]
+fn test_signer_rotation_with_pending_withdrawal() {
+    let (env, admin, client) = setup_env();
+    let signer1 = Address::generate(&env);
+    let signer2 = Address::generate(&env);
+    let signer3 = Address::generate(&env);
+    let token = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let mut signers = Vec::new(&env);
+    signers.push_back(signer1.clone());
+    signers.push_back(signer2.clone());
+
+    client.initialize(&admin, &signers, &2);
+
+    // Create a withdrawal with threshold 2
+    let proposal_id = client.create_withdrawal(
+        &signer1,
+        &token,
+        &recipient,
+        &1000_i128,
+        &symbol_short!("salary"),
+    );
+
+    let request = client.get_withdrawal(&proposal_id);
+    assert_eq!(request.status, WithdrawalStatus::Pending);
+    assert_eq!(request.signer_set_version, 0);
+
+    // Add a new signer - this increments the signer set version
+    client.add_signer(&admin, &signer3);
+    assert_eq!(client.get_signers().len(), 3);
+
+    // The pending withdrawal still has signer_set_version 0
+    let request = client.get_withdrawal(&proposal_id);
+    assert_eq!(request.signer_set_version, 0);
+
+    // Original signer2 can still approve (was in signer set version 0)
+    client.approve_withdrawal(&signer2, &proposal_id);
+    let request = client.get_withdrawal(&proposal_id);
+    assert_eq!(request.status, WithdrawalStatus::Approved);
+}
+
+#[test]
+fn test_signer_removal_does_not_invalidate_pending_withdrawal() {
+    let (env, admin, client) = setup_env();
+    let signer1 = Address::generate(&env);
+    let signer2 = Address::generate(&env);
+    let signer3 = Address::generate(&env);
+    let token = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let mut signers = Vec::new(&env);
+    signers.push_back(signer1.clone());
+    signers.push_back(signer2.clone());
+    signers.push_back(signer3.clone());
+
+    client.initialize(&admin, &signers, &2);
+
+    // Create a withdrawal with threshold 2
+    let proposal_id = client.create_withdrawal(
+        &signer1,
+        &token,
+        &recipient,
+        &1000_i128,
+        &symbol_short!("salary"),
+    );
+
+    let request = client.get_withdrawal(&proposal_id);
+    assert_eq!(request.status, WithdrawalStatus::Pending);
+    assert_eq!(request.signer_set_version, 0);
+
+    // Remove signer3 - this increments the signer set version
+    client.remove_signer(&admin, &signer3);
+    assert_eq!(client.get_signers().len(), 2);
+
+    // The pending withdrawal still has signer_set_version 0
+    let request = client.get_withdrawal(&proposal_id);
+    assert_eq!(request.signer_set_version, 0);
+
+    // Original signer2 can still approve (was in signer set version 0)
+    client.approve_withdrawal(&signer2, &proposal_id);
+    let request = client.get_withdrawal(&proposal_id);
+    assert_eq!(request.status, WithdrawalStatus::Approved);
 }

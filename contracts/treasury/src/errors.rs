@@ -45,4 +45,7 @@ pub enum TreasuryError {
     /// The withdrawal proposal has expired.
     /// Triggered when attempting to interact with a proposal past its validity period.
     ProposalExpired = 13,
+    /// The signer list contains duplicate addresses.
+    /// Triggered when initializing or updating signers with duplicate entries.
+    DuplicateSigner = 14,
 }
