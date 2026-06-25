@@ -36,6 +36,9 @@ pub struct WithdrawalRequest {
     pub status: WithdrawalStatus,
     /// Ledger timestamp when the request was created.
     pub created_at: u64,
+    /// The signer set version at the time of creation.
+    /// Used to determine which signers can approve this request.
+    pub signer_set_version: u32,
 }
 
 /// Treasury configuration snapshot — used for read-only queries.
