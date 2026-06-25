@@ -58,6 +58,10 @@ fn test_create_proposal() {
     let proposal = client.get_proposal(&proposal_id);
     assert_eq!(proposal.status, ProposalStatus::Active);
     assert_eq!(proposal.amount, 50_000);
+    // Snapshot must be populated
+    assert_eq!(proposal.snapshot.quorum_percentage, 51);
+    assert_eq!(proposal.snapshot.total_weight, 1);
+    assert_eq!(proposal.snapshot.electorate.len(), 1);
 }
 
 #[test]
@@ -235,7 +239,7 @@ fn test_weighted_voting() {
     // Total weight is 2 initially
     assert_eq!(client.get_config().total_weight, 2);
 
-    // Set member1 weight to 10
+    // Set member1 weight to 10 BEFORE proposal creation so snapshot captures it
     client.set_voting_weight(&admin, &member1, &10);
     assert_eq!(client.get_config().total_weight, 11);
 
@@ -251,10 +255,10 @@ fn test_weighted_voting() {
         &recipient,
     );
 
-    // Member1 votes Yes (10 weight)
+    // Member1 votes Yes (10 weight from snapshot)
     client.vote(&member1, &proposal_id, &VoteChoice::Yes);
-    
-    // Member2 votes No (1 weight)
+
+    // Member2 votes No (1 weight from snapshot)
     client.vote(&member2, &proposal_id, &VoteChoice::No);
 
     let proposal = client.get_proposal(&proposal_id);
@@ -310,7 +314,7 @@ fn test_weighted_quorum() {
 
     let status = client.finalize(&admin, &proposal_id);
     assert_eq!(status, ProposalStatus::Rejected);
-    
+
     // Member1 votes Yes later (100 weight). Total = 101. 101/101 > 51% quorum.
     // Resetting for a new proposal to test passed quorum
     let proposal_id_2 = client.create_proposal(
@@ -321,11 +325,11 @@ fn test_weighted_quorum() {
         &recipient,
     );
     client.vote(&member1, &proposal_id_2, &VoteChoice::Yes);
-    
+
     env.ledger().with_mut(|li| {
         li.timestamp = 3200; // Past end_time (3001) but before grace period expiry (3501)
     });
-    
+
     let status_2 = client.finalize(&admin, &proposal_id_2);
     assert_eq!(status_2, ProposalStatus::Approved);
 }
@@ -383,4 +387,195 @@ fn test_cancel_proposal_unauthorized() {
 
     // Only the proposer can cancel
     client.cancel_proposal(&non_proposer, &proposal_id);
+}
+
+// ── Snapshot isolation tests ─────────────────────────────────────────────────
+
+/// A member added AFTER proposal creation is not in the snapshot electorate
+/// and must not be allowed to cast a vote.
+#[test]
+#[should_panic(expected = "Error(Contract, #7)")]
+fn test_snapshot_new_member_cannot_vote() {
+    let (env, admin, client) = setup_env();
+    let m1 = Address::generate(&env);
+    let m2 = Address::generate(&env);
+    let m3 = Address::generate(&env);
+    let token = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let mut members = Vec::new(&env);
+    members.push_back(m1.clone());
+    members.push_back(m2.clone());
+
+    client.initialize(&admin, &members, &51, &1000, &500);
+
+    let proposal_id = client.create_proposal(
+        &m1,
+        &symbol_short!("test"),
+        &token,
+        &1000_i128,
+        &recipient,
+    );
+
+    // Add m3 AFTER proposal creation — not in the snapshot electorate
+    client.add_member(&admin, &m3);
+
+    // m3 is a live member but was not snapshotted — must be rejected with NotAMember (#7)
+    client.vote(&m3, &proposal_id, &VoteChoice::Yes);
+}
+
+/// If a member's weight is raised after proposal creation, votes still use the
+/// weight that was frozen in the snapshot at creation time.
+///
+/// Setup: 4 members (total snapshot weight = 4), quorum = 51%.
+/// Quorum threshold = floor(4 * 51 / 100) = 2.
+/// After creation m1's weight is raised to 100 (live total = 103).
+/// Only m1 votes → yes_votes must equal 1 (snapshotted), not 100 (live).
+/// 1 < threshold 2 → Rejected with snapshot; would be Approved without it.
+#[test]
+fn test_snapshot_member_weight_frozen_on_vote() {
+    let (env, admin, client) = setup_env();
+    let m1 = Address::generate(&env);
+    let m2 = Address::generate(&env);
+    let m3 = Address::generate(&env);
+    let m4 = Address::generate(&env);
+    let token = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let mut members = Vec::new(&env);
+    members.push_back(m1.clone());
+    members.push_back(m2.clone());
+    members.push_back(m3.clone());
+    members.push_back(m4.clone());
+
+    let voting_duration = 1000u64;
+    let grace_period = 500u64;
+    // Snapshot: m1=1, m2=1, m3=1, m4=1, total=4, quorum=51%
+    // Quorum threshold = floor(4 * 51 / 100) = 2
+    client.initialize(&admin, &members, &51, &voting_duration, &grace_period);
+
+    env.ledger().with_mut(|li| { li.timestamp = 1000; });
+
+    let proposal_id = client.create_proposal(
+        &m1,
+        &symbol_short!("freeze"),
+        &token,
+        &1000_i128,
+        &recipient,
+    );
+
+    // Admin bumps m1 weight to 100 AFTER creation. Live total = 103.
+    client.set_voting_weight(&admin, &m1, &100);
+    assert_eq!(client.get_config().total_weight, 103);
+
+    // m1 votes; snapshot weight must be used (1, not 100)
+    client.vote(&m1, &proposal_id, &VoteChoice::Yes);
+
+    let proposal = client.get_proposal(&proposal_id);
+    assert_eq!(proposal.yes_votes, 1, "snapshot weight (1) must be used, not live weight (100)");
+
+    // Past voting period.
+    // Snapshot: yes=1 out of total=4 → 1 < quorum threshold 2 → Rejected.
+    // Without snapshot: live weight 100 out of live total 103 → 100 ≥ 52 → Approved.
+    env.ledger().with_mut(|li| { li.timestamp = 1000 + voting_duration + 1; });
+    let status = client.finalize(&admin, &proposal_id);
+    assert_eq!(status, ProposalStatus::Rejected);
+}
+
+/// Removing members after proposal creation must not lower the snapshotted
+/// total_weight used for quorum calculation.
+#[test]
+fn test_snapshot_total_weight_frozen_on_finalize() {
+    let (env, admin, client) = setup_env();
+    let m1 = Address::generate(&env);
+    let m2 = Address::generate(&env);
+    let m3 = Address::generate(&env);
+    let m4 = Address::generate(&env);
+    let token = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let mut members = Vec::new(&env);
+    members.push_back(m1.clone());
+    members.push_back(m2.clone());
+    members.push_back(m3.clone());
+    members.push_back(m4.clone());
+
+    let voting_duration = 1000u64;
+    let grace_period = 500u64;
+    // 51% quorum; snapshot total_weight = 4
+    client.initialize(&admin, &members, &51, &voting_duration, &grace_period);
+
+    env.ledger().with_mut(|li| { li.timestamp = 1000; });
+
+    let proposal_id = client.create_proposal(
+        &m1,
+        &symbol_short!("remove"),
+        &token,
+        &1000_i128,
+        &recipient,
+    );
+
+    // m1 and m2 cast votes (2 out of snapshot total 4 = 50% < 51%)
+    client.vote(&m1, &proposal_id, &VoteChoice::Yes);
+    client.vote(&m2, &proposal_id, &VoteChoice::No);
+
+    // Admin removes m3 and m4 AFTER votes are cast. Live total drops to 2.
+    // Without snapshot: 2/2 = 100% ≥ 51% → would Approve.
+    // With snapshot:    2/4 = 50%  < 51% → must Reject.
+    client.remove_member(&admin, &m3);
+    client.remove_member(&admin, &m4);
+    assert_eq!(client.get_config().total_weight, 2);
+
+    env.ledger().with_mut(|li| { li.timestamp = 1000 + voting_duration + 1; });
+
+    let status = client.finalize(&admin, &proposal_id);
+    assert_eq!(
+        status,
+        ProposalStatus::Rejected,
+        "snapshotted total_weight (4) must be used for quorum, not live value (2)"
+    );
+}
+
+/// A member removed AFTER proposal creation was in the snapshot electorate
+/// and must still be able to cast a vote.
+#[test]
+fn test_snapshot_removed_member_retains_vote_eligibility() {
+    let (env, admin, client) = setup_env();
+    let m1 = Address::generate(&env);
+    let m2 = Address::generate(&env);
+    let token = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let mut members = Vec::new(&env);
+    members.push_back(m1.clone());
+    members.push_back(m2.clone());
+
+    let voting_duration = 1000u64;
+    let grace_period = 500u64;
+    // Snapshot: m1=1, m2=1, total=2, quorum=51%
+    client.initialize(&admin, &members, &51, &voting_duration, &grace_period);
+
+    env.ledger().with_mut(|li| { li.timestamp = 1000; });
+
+    let proposal_id = client.create_proposal(
+        &m1,
+        &symbol_short!("retain"),
+        &token,
+        &1000_i128,
+        &recipient,
+    );
+
+    // Admin removes m1 before they vote
+    client.remove_member(&admin, &m1);
+    assert_eq!(client.get_members().len(), 1);
+
+    // m1 is no longer a live member but was in the snapshot — must still vote
+    client.vote(&m1, &proposal_id, &VoteChoice::Yes);
+    client.vote(&m2, &proposal_id, &VoteChoice::Yes);
+
+    let proposal = client.get_proposal(&proposal_id);
+    // Both votes used snapshotted weights: m1=1, m2=1
+    assert_eq!(proposal.yes_votes, 2);
+
+    env.ledger().with_mut(|li| { li.timestamp = 1000 + voting_duration + 1; });
+
+    // Snapshot total=2; 2/2 = 100% ≥ 51% quorum; Yes > No → Approved
+    let status = client.finalize(&admin, &proposal_id);
+    assert_eq!(status, ProposalStatus::Approved);
 }

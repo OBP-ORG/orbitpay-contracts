@@ -13,7 +13,10 @@ use storage::{
     get_grace_period, set_grace_period,
     get_total_weight, set_total_weight, get_voting_weight, set_voting_weight,
 };
-use types::{Proposal, ProposalStatus, VoteChoice, VoteRecord, GovernanceConfig};
+use types::{
+    MemberWeight, Proposal, ProposalSnapshot, ProposalStatus, VoteChoice, VoteRecord,
+    GovernanceConfig,
+};
 
 #[contract]
 pub struct GovernanceContract;
@@ -84,6 +87,23 @@ impl GovernanceContract {
         let now = env.ledger().timestamp();
         let voting_duration = get_voting_duration(&env);
 
+        // Build an immutable snapshot of the current electorate and governance
+        // parameters. All subsequent vote and finalization checks use these
+        // frozen values so that admin mutations cannot influence in-flight proposals.
+        let members = get_members(&env);
+        let mut electorate = Vec::new(&env);
+        for i in 0..members.len() {
+            let m = members.get(i).unwrap();
+            let w = get_voting_weight(&env, &m);
+            electorate.push_back(MemberWeight { member: m, weight: w });
+        }
+        let snapshot = ProposalSnapshot {
+            quorum_percentage: get_quorum_percentage(&env),
+            grace_period: get_grace_period(&env),
+            total_weight: get_total_weight(&env),
+            electorate,
+        };
+
         let proposal = Proposal {
             id: proposal_id,
             proposer: proposer.clone(),
@@ -98,6 +118,7 @@ impl GovernanceContract {
             status: ProposalStatus::Active,
             start_time: now,
             end_time: now + voting_duration,
+            snapshot,
         };
 
         set_proposal(&env, proposal_id, &proposal);
@@ -113,6 +134,7 @@ impl GovernanceContract {
 
     /// Cast a vote on an active proposal.
     /// Each member can only vote once per proposal.
+    /// Eligibility and weight are taken from the proposal's snapshot, not live state.
     pub fn vote(
         env: Env,
         voter: Address,
@@ -123,10 +145,6 @@ impl GovernanceContract {
             return Err(GovernanceError::NotInitialized);
         }
         voter.require_auth();
-
-        if !is_member(&env, &voter) {
-            return Err(GovernanceError::NotAMember);
-        }
 
         let mut proposal = get_proposal(&env, proposal_id)
             .ok_or(GovernanceError::ProposalNotFound)?;
@@ -140,6 +158,19 @@ impl GovernanceContract {
             return Err(GovernanceError::VotingPeriodExpired);
         }
 
+        // Resolve eligibility and weight from the snapshotted electorate.
+        // Members added after proposal creation are not in the snapshot and
+        // cannot vote; members removed after creation retain their eligibility.
+        let mut voter_weight: Option<u128> = None;
+        for i in 0..proposal.snapshot.electorate.len() {
+            let mw = proposal.snapshot.electorate.get(i).unwrap();
+            if mw.member == voter {
+                voter_weight = Some(mw.weight);
+                break;
+            }
+        }
+        let weight = voter_weight.ok_or(GovernanceError::NotAMember)?;
+
         // Check for duplicate votes
         for i in 0..proposal.votes.len() {
             let record = proposal.votes.get(i).unwrap();
@@ -148,8 +179,6 @@ impl GovernanceContract {
             }
         }
 
-        // Record the vote using member's weight
-        let weight = get_voting_weight(&env, &voter);
         match choice {
             VoteChoice::Yes => proposal.yes_votes += weight,
             VoteChoice::No => proposal.no_votes += weight,
@@ -173,7 +202,7 @@ impl GovernanceContract {
     }
 
     /// Finalize a proposal after the voting period has ended.
-    /// Checks quorum and majority to determine if the proposal passes.
+    /// Checks quorum and majority using the proposal's snapshot, not live config.
     pub fn finalize(
         env: Env,
         caller: Address,
@@ -196,8 +225,10 @@ impl GovernanceContract {
             return Err(GovernanceError::ProposalStillActive);
         }
 
-        let quorum_pct = get_quorum_percentage(&env);
-        let total_weight = get_total_weight(&env);
+        // Use snapshotted parameters so post-creation admin changes cannot
+        // alter quorum requirements or total weight for this proposal.
+        let quorum_pct = proposal.snapshot.quorum_percentage;
+        let total_weight = proposal.snapshot.total_weight;
         let voted_weight = proposal.yes_votes + proposal.no_votes + proposal.abstain_votes;
 
         // Check quorum: enough voting weight represented?
@@ -208,8 +239,8 @@ impl GovernanceContract {
             return Ok(ProposalStatus::Rejected);
         }
 
-        // Check grace period: auto-reject if expired
-        let grace_period = get_grace_period(&env);
+        // Check grace period using snapshotted value.
+        let grace_period = proposal.snapshot.grace_period;
         if now > proposal.end_time + grace_period {
             proposal.status = ProposalStatus::Rejected;
             set_proposal(&env, proposal_id, &proposal);
@@ -243,7 +274,7 @@ impl GovernanceContract {
         if !has_admin(&env) {
             return Err(GovernanceError::NotInitialized);
         }
-        let stored_admin = get_admin(&env) ;
+        let stored_admin = get_admin(&env);
         if admin != stored_admin {
             return Err(GovernanceError::Unauthorized);
         }
@@ -444,8 +475,10 @@ impl GovernanceContract {
         }
 
         let now = env.ledger().timestamp();
-        let grace_period = get_grace_period(&env);
-        
+        // Use the snapshotted grace period so that changing it after creation
+        // does not retroactively shorten or extend the expiry window.
+        let grace_period = proposal.snapshot.grace_period;
+
         if now > proposal.end_time + grace_period {
             return Ok(ProposalStatus::Expired);
         }
