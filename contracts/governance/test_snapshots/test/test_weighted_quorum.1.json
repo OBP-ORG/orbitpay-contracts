@@ -356,6 +356,97 @@
                     },
                     {
                       "key": {
+                        "symbol": "snapshot"
+                      },
+                      "val": {
+                        "map": [
+                          {
+                            "key": {
+                              "symbol": "electorate"
+                            },
+                            "val": {
+                              "vec": [
+                                {
+                                  "map": [
+                                    {
+                                      "key": {
+                                        "symbol": "member"
+                                      },
+                                      "val": {
+                                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                                      }
+                                    },
+                                    {
+                                      "key": {
+                                        "symbol": "weight"
+                                      },
+                                      "val": {
+                                        "u128": {
+                                          "hi": 0,
+                                          "lo": 100
+                                        }
+                                      }
+                                    }
+                                  ]
+                                },
+                                {
+                                  "map": [
+                                    {
+                                      "key": {
+                                        "symbol": "member"
+                                      },
+                                      "val": {
+                                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                                      }
+                                    },
+                                    {
+                                      "key": {
+                                        "symbol": "weight"
+                                      },
+                                      "val": {
+                                        "u128": {
+                                          "hi": 0,
+                                          "lo": 1
+                                        }
+                                      }
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "grace_period"
+                            },
+                            "val": {
+                              "u64": 500
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "quorum_percentage"
+                            },
+                            "val": {
+                              "u32": 51
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "total_weight"
+                            },
+                            "val": {
+                              "u128": {
+                                "hi": 0,
+                                "lo": 101
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "start_time"
                       },
                       "val": {
@@ -551,6 +642,97 @@
                       },
                       "val": {
                         "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "snapshot"
+                      },
+                      "val": {
+                        "map": [
+                          {
+                            "key": {
+                              "symbol": "electorate"
+                            },
+                            "val": {
+                              "vec": [
+                                {
+                                  "map": [
+                                    {
+                                      "key": {
+                                        "symbol": "member"
+                                      },
+                                      "val": {
+                                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                                      }
+                                    },
+                                    {
+                                      "key": {
+                                        "symbol": "weight"
+                                      },
+                                      "val": {
+                                        "u128": {
+                                          "hi": 0,
+                                          "lo": 100
+                                        }
+                                      }
+                                    }
+                                  ]
+                                },
+                                {
+                                  "map": [
+                                    {
+                                      "key": {
+                                        "symbol": "member"
+                                      },
+                                      "val": {
+                                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                                      }
+                                    },
+                                    {
+                                      "key": {
+                                        "symbol": "weight"
+                                      },
+                                      "val": {
+                                        "u128": {
+                                          "hi": 0,
+                                          "lo": 1
+                                        }
+                                      }
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "grace_period"
+                            },
+                            "val": {
+                              "u64": 500
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "quorum_percentage"
+                            },
+                            "val": {
+                              "u32": 51
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "total_weight"
+                            },
+                            "val": {
+                              "u128": {
+                                "hi": 0,
+                                "lo": 101
+                              }
+                            }
+                          }
+                        ]
                       }
                     },
                     {

@@ -488,3 +488,29 @@ fn test_signer_removal_does_not_invalidate_pending_withdrawal() {
     let request = client.get_withdrawal(&proposal_id);
     assert_eq!(request.status, WithdrawalStatus::Approved);
 }
+
+#[test]
+fn test_deposit() {
+    let (env, admin, client) = setup_env();
+    let signer1 = Address::generate(&env);
+    let mut signers = Vec::new(&env);
+    signers.push_back(signer1.clone());
+
+    let token_admin = Address::generate(&env);
+    let token_admin_client = create_token_contract(&env, &token_admin);
+    let token = token_admin_client.address.clone();
+    let token_client = create_token_client(&env, &token);
+
+    client.initialize(&admin, &signers, &1);
+
+    let depositor = Address::generate(&env);
+    let initial_balance = 50000;
+    token_admin_client.mint(&depositor, &initial_balance);
+
+    let deposit_amount = 15000;
+    client.deposit(&depositor, &token, &deposit_amount);
+
+    assert_eq!(token_client.balance(&depositor), initial_balance - deposit_amount);
+    assert_eq!(token_client.balance(&client.address), deposit_amount);
+}
+

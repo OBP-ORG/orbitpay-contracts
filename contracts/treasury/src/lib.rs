@@ -72,7 +72,7 @@ impl TreasuryContract {
     pub fn deposit(
         env: Env,
         from: Address,
-        _token: Address,
+        token: Address,
         amount: i128,
     ) -> Result<(), TreasuryError> {
         Self::require_initialized(&env)?;
@@ -83,9 +83,8 @@ impl TreasuryContract {
         from.require_auth();
 
         // Transfer tokens from depositor to this contract
-        let _contract_address = env.current_contract_address();
-        // TODO: Invoke token contract transfer (contributor task SC-4)
-        // token::Client::new(&env, &token).transfer(&from, &contract_address, &amount);
+        let contract_address = env.current_contract_address();
+        token::Client::new(&env, &token).transfer(&from, &contract_address, &amount);
 
         env.events()
             .publish((symbol_short!("deposit"), from.clone()), amount);
