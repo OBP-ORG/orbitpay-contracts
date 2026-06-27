@@ -156,6 +156,63 @@ fn test_revoke_withdrawal() {
 }
 
 #[test]
+fn test_claim_after_revoke() {
+    let (env, admin, client) = setup_env();
+    let grantor = Address::generate(&env);
+    let beneficiary = Address::generate(&env);
+    
+    let token_admin = Address::generate(&env);
+    let token_contract = create_token_contract(&env, &token_admin);
+    let token_client = token::Client::new(&env, &token_contract.address);
+    token_contract.mint(&grantor, &100_000);
+
+    client.initialize(&admin);
+
+    let year = 365 * 24 * 60 * 60_u64;
+    env.ledger().with_mut(|li| {
+        li.timestamp = 1000;
+    });
+
+    let schedule_id = client.create_schedule(
+        &grantor,
+        &beneficiary,
+        &token_contract.address,
+        &100_000_i128,
+        &1000_u64,
+        &year,
+        &25_000_i128,
+        &(4 * year),
+        &symbol_short!("team"),
+        &true,
+    );
+
+    // Move to 2 years, then revoke
+    env.ledger().with_mut(|li| {
+        li.timestamp = 1000 + (2 * year);
+    });
+
+    let unvested = client.revoke(&grantor, &schedule_id);
+    assert_eq!(unvested, 50_000);
+
+    // Beneficiary should be able to claim the 50_000 that vested
+    let claimed = client.claim(&beneficiary, &schedule_id);
+    assert_eq!(claimed, 50_000);
+    
+    // Status should be FullyClaimed
+    let schedule = client.get_schedule(&schedule_id);
+    assert_eq!(schedule.status, VestingStatus::FullyClaimed);
+
+    // Trying to revoke again should fail with AlreadyFullyClaimed
+    let revoke_again = client.try_revoke(&grantor, &schedule_id);
+    assert_eq!(revoke_again, Err(Ok(VestingError::AlreadyFullyClaimed)));
+    
+    // Token balances should be correct
+    assert_eq!(token_client.balance(&grantor), 50_000);
+    assert_eq!(token_client.balance(&beneficiary), 50_000);
+    assert_eq!(token_client.balance(&client.address), 0);
+}
+
+#[test]
 fn test_insufficient_balance_on_create() {
     let (env, admin, client) = setup_env();
     let grantor = Address::generate(&env);
