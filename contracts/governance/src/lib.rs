@@ -12,6 +12,7 @@ use storage::{
     get_quorum_percentage, set_quorum_percentage, get_voting_duration, set_voting_duration,
     get_grace_period, set_grace_period,
     get_total_weight, set_total_weight, get_voting_weight, set_voting_weight,
+    extend_instance_ttl, extend_proposal_ttl, extend_voting_weight_ttl,
 };
 use types::{
     MemberWeight, Proposal, ProposalSnapshot, ProposalStatus, VoteChoice, VoteRecord,
@@ -57,6 +58,8 @@ impl GovernanceContract {
             (symbol_short!("init"),),
             admin.clone(),
         );
+
+        extend_instance_ttl(&env);
 
         Ok(())
     }
@@ -129,6 +132,9 @@ impl GovernanceContract {
             proposal_id,
         );
 
+        extend_instance_ttl(&env);
+        extend_proposal_ttl(&env, proposal_id);
+
         Ok(proposal_id)
     }
 
@@ -198,6 +204,9 @@ impl GovernanceContract {
             proposal_id,
         );
 
+        extend_instance_ttl(&env);
+        extend_proposal_ttl(&env, proposal_id);
+
         Ok(())
     }
 
@@ -236,6 +245,8 @@ impl GovernanceContract {
         if voted_weight < quorum_threshold {
             proposal.status = ProposalStatus::Rejected;
             set_proposal(&env, proposal_id, &proposal);
+            extend_instance_ttl(&env);
+            extend_proposal_ttl(&env, proposal_id);
             return Ok(ProposalStatus::Rejected);
         }
 
@@ -244,6 +255,8 @@ impl GovernanceContract {
         if now > proposal.end_time + grace_period {
             proposal.status = ProposalStatus::Rejected;
             set_proposal(&env, proposal_id, &proposal);
+            extend_instance_ttl(&env);
+            extend_proposal_ttl(&env, proposal_id);
             return Ok(ProposalStatus::Rejected);
         }
 
@@ -260,6 +273,9 @@ impl GovernanceContract {
             (symbol_short!("finalize"),),
             proposal.status.clone(),
         );
+
+        extend_instance_ttl(&env);
+        extend_proposal_ttl(&env, proposal_id);
 
         Ok(proposal.status)
     }
@@ -298,6 +314,9 @@ impl GovernanceContract {
             proposal_id,
         );
 
+        extend_instance_ttl(&env);
+        extend_proposal_ttl(&env, proposal_id);
+
         Ok(())
     }
 
@@ -332,6 +351,9 @@ impl GovernanceContract {
             proposal_id,
         );
 
+        extend_instance_ttl(&env);
+        extend_proposal_ttl(&env, proposal_id);
+
         Ok(())
     }
 
@@ -356,8 +378,10 @@ impl GovernanceContract {
 
         env.events().publish(
             (symbol_short!("m_add"),),
-            new_member,
+            new_member.clone(),
         );
+
+        extend_instance_ttl(&env);
 
         Ok(())
     }
@@ -395,8 +419,12 @@ impl GovernanceContract {
 
         env.events().publish(
             (symbol_short!("m_remove"),),
-            member,
+            member.clone(),
         );
+
+        extend_instance_ttl(&env);
+        // Maybe we don't strictly need to extend weight TTL if member is removed, but for safety.
+        // Actually, we are just keeping the weight around since we don't delete it.
 
         Ok(())
     }
@@ -425,9 +453,12 @@ impl GovernanceContract {
         set_total_weight(&env, total_weight - old_weight + new_weight);
 
         env.events().publish(
-            (symbol_short!("w_set"), member),
+            (symbol_short!("w_set"), member.clone()),
             new_weight,
         );
+
+        extend_instance_ttl(&env);
+        extend_voting_weight_ttl(&env, &member);
 
         Ok(())
     }

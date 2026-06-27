@@ -1,5 +1,12 @@
 use soroban_sdk::{contracttype, Address, Env, Vec};
 
+pub(crate) const DAY_IN_LEDGERS: u32 = 17280;
+pub(crate) const INSTANCE_BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS; // 30 days
+pub(crate) const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
+
+pub(crate) const PERSISTENT_BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS; // 30 days
+pub(crate) const PERSISTENT_LIFETIME_THRESHOLD: u32 = PERSISTENT_BUMP_AMOUNT - DAY_IN_LEDGERS;
+
 use crate::types::Proposal;
 
 /// Keys used to store data in the contract's ledger storage.
@@ -110,4 +117,28 @@ pub fn get_grace_period(env: &Env) -> u64 {
 
 pub fn set_grace_period(env: &Env, grace_period: u64) {
     env.storage().instance().set(&DataKey::GracePeriod, &grace_period);
+}
+
+// ── TTL helpers ──────────────────────────────────────────────────
+
+pub fn extend_instance_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+}
+
+pub fn extend_proposal_ttl(env: &Env, id: u32) {
+    env.storage().persistent().extend_ttl(
+        &DataKey::Proposal(id),
+        PERSISTENT_LIFETIME_THRESHOLD,
+        PERSISTENT_BUMP_AMOUNT,
+    );
+}
+
+pub fn extend_voting_weight_ttl(env: &Env, address: &Address) {
+    env.storage().persistent().extend_ttl(
+        &DataKey::VotingWeight(address.clone()),
+        PERSISTENT_LIFETIME_THRESHOLD,
+        PERSISTENT_BUMP_AMOUNT,
+    );
 }
