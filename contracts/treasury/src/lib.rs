@@ -29,6 +29,9 @@ impl TreasuryContract {
 
     /// Initialize the treasury with an admin and initial set of signers.
     /// The threshold defines how many signers must approve a withdrawal.
+    /// # Authorization Policy
+    /// - **Caller:** Any address, provided they have the signature of the `admin` being set.
+    /// - **Policy:** `admin.require_auth()` is enforced.
     pub fn initialize(
         env: Env,
         admin: Address,
@@ -69,6 +72,9 @@ impl TreasuryContract {
 
     /// Deposit native tokens into the treasury.
     /// Any address can deposit funds into the treasury vault.
+    /// # Authorization Policy
+    /// - **Caller:** The `from` address depositing the funds.
+    /// - **Policy:** `from.require_auth()` ensures the depositor authorizes the transfer.
     pub fn deposit(
         env: Env,
         from: Address,
@@ -94,6 +100,9 @@ impl TreasuryContract {
 
     /// Create a withdrawal request that requires multi-sig approval.
     /// Only existing signers can create withdrawal requests.
+    /// # Authorization Policy
+    /// - **Caller:** A `proposer` who is a signer.
+    /// - **Policy:** `proposer.require_auth()` ensures the proposal is authorized.
     pub fn create_withdrawal(
         env: Env,
         proposer: Address,
@@ -160,6 +169,9 @@ impl TreasuryContract {
 
     /// Approve a pending withdrawal request.
     /// Only signers can approve. Once threshold is met, the withdrawal is marked as approved.
+    /// # Authorization Policy
+    /// - **Caller:** A `signer`.
+    /// - **Policy:** `signer.require_auth()` is enforced.
     pub fn approve_withdrawal(
         env: Env,
         signer: Address,
@@ -215,6 +227,9 @@ impl TreasuryContract {
 
     /// Execute an approved withdrawal — transfers funds to recipient.
     /// Can only be called after threshold approvals are met.
+    /// # Authorization Policy
+    /// - **Caller:** The `executor`.
+    /// - **Policy:** `executor.require_auth()` ensures the transaction is authorized.
     pub fn execute_withdrawal(
         env: Env,
         executor: Address,
@@ -254,6 +269,9 @@ impl TreasuryContract {
     }
 
     /// Add a new signer to the treasury. Restricted to admin.
+    /// # Authorization Policy
+    /// - **Caller:** The `admin`.
+    /// - **Policy:** `admin.require_auth()` is enforced.
     pub fn add_signer(env: Env, admin: Address, new_signer: Address) -> Result<(), TreasuryError> {
         Self::require_initialized(&env)?;
         let stored_admin = get_admin(&env);
@@ -286,6 +304,9 @@ impl TreasuryContract {
 
     /// Remove a signer from the treasury. Restricted to admin.
     /// Cannot remove if it would make threshold unachievable.
+    /// # Authorization Policy
+    /// - **Caller:** The `admin`.
+    /// - **Policy:** `admin.require_auth()` is enforced.
     pub fn remove_signer(env: Env, admin: Address, signer: Address) -> Result<(), TreasuryError> {
         Self::require_initialized(&env)?;
         let stored_admin = get_admin(&env);
@@ -331,6 +352,9 @@ impl TreasuryContract {
     }
 
     /// Update the approval threshold. Restricted to admin.
+    /// # Authorization Policy
+    /// - **Caller:** The `admin`.
+    /// - **Policy:** `admin.require_auth()` is enforced.
     pub fn update_threshold(
         env: Env,
         admin: Address,
