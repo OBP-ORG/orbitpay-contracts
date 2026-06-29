@@ -132,9 +132,6 @@ impl VestingContract {
         if schedule.beneficiary != beneficiary {
             return Err(VestingError::Unauthorized);
         }
-        if schedule.status == VestingStatus::Revoked {
-            return Err(VestingError::ScheduleRevoked);
-        }
         if schedule.status == VestingStatus::FullyClaimed {
             return Err(VestingError::AlreadyFullyClaimed);
         }
@@ -200,6 +197,9 @@ impl VestingContract {
         if schedule.status == VestingStatus::Revoked {
             return Err(VestingError::ScheduleRevoked);
         }
+        if schedule.status == VestingStatus::FullyClaimed {
+            return Err(VestingError::AlreadyFullyClaimed);
+        }
         if !schedule.revocable {
             return Err(VestingError::Unauthorized);
         }
@@ -234,6 +234,10 @@ impl VestingContract {
     /// Calculate the total amount of tokens that have vested by now.
     /// Uses cliff + linear vesting model.
     fn calculate_vested(env: &Env, schedule: &VestingSchedule) -> i128 {
+        if schedule.status == VestingStatus::Revoked || schedule.status == VestingStatus::FullyClaimed {
+            return schedule.total_amount;
+        }
+
         let now = env.ledger().timestamp();
 
         if now < schedule.start_time {
