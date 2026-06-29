@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, Vec, symbol_short, token};
+use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, Symbol, Vec, symbol_short, token};
 
 mod errors;
 mod storage;
@@ -13,8 +13,9 @@ use storage::{
     get_claim_history as storage_get_claim_history, add_claim_record,
     extend_instance_ttl, extend_schedule_ttl, extend_grantor_schedules_ttl,
     extend_beneficiary_schedules_ttl, extend_claim_history_ttl,
+    get_pending_upgrade, set_pending_upgrade, clear_pending_upgrade, MIN_UPGRADE_DELAY,
 };
-use types::{VestingSchedule, VestingStatus, VestingProgress, ClaimRecord};
+use types::{VestingSchedule, VestingStatus, VestingProgress, ClaimRecord, PendingUpgrade};
 
 #[contract]
 pub struct VestingContract;
@@ -348,15 +349,70 @@ impl VestingContract {
         Ok(get_admin(&env))
     }
 
-    /// Upgrade the contract WASM. Restricted to admin.
-    pub fn upgrade(env: Env, admin: Address, new_wasm_hash: soroban_sdk::BytesN<32>) -> Result<(), VestingError> {
+    // ── Timelocked Upgrade ─────────────────────────────────────────
+
+    /// Propose a WASM upgrade. Admin only. The upgrade cannot be executed
+    /// until MIN_UPGRADE_DELAY has elapsed.
+    /// # Authorization Policy
+    /// - **Caller:** The `admin`.
+    /// - **Policy:** `admin.require_auth()` is enforced.
+    pub fn propose_upgrade(
+        env: Env,
+        admin: Address,
+        wasm_hash: BytesN<32>,
+        description: Symbol,
+    ) -> Result<(), VestingError> {
         let stored_admin = get_admin(&env);
         if admin != stored_admin {
             return Err(VestingError::Unauthorized);
         }
         admin.require_auth();
-        env.deployer().update_current_contract_wasm(new_wasm_hash);
+
+        let pending = PendingUpgrade {
+            wasm_hash,
+            proposed_at: env.ledger().timestamp(),
+        };
+        set_pending_upgrade(&env, &pending);
+        extend_instance_ttl(&env);
+
+        env.events().publish(
+            (symbol_short!("upg_prop"),),
+            (description, pending.proposed_at),
+        );
+
         Ok(())
+    }
+
+    /// Execute a pending WASM upgrade after the timelock delay has expired.
+    /// # Authorization Policy
+    /// - **Caller:** The `executor`.
+    /// - **Policy:** `executor.require_auth()` ensures the transaction is authorized.
+    pub fn execute_upgrade(env: Env, executor: Address) -> Result<(), VestingError> {
+        executor.require_auth();
+
+        let pending = get_pending_upgrade(&env).ok_or(VestingError::NoPendingUpgrade)?;
+        let now = env.ledger().timestamp();
+
+        if now < pending.proposed_at + MIN_UPGRADE_DELAY {
+            return Err(VestingError::TimelockNotExpired);
+        }
+
+        env.deployer().update_current_contract_wasm(pending.wasm_hash);
+        clear_pending_upgrade(&env);
+        extend_instance_ttl(&env);
+
+        env.events()
+            .publish((symbol_short!("upg_exec"), executor), ());
+
+        Ok(())
+    }
+
+    /// Get the pending upgrade proposal, if any.
+    pub fn get_pending_upgrade(env: Env) -> Result<Option<PendingUpgrade>, VestingError> {
+        if !has_admin(&env) {
+            return Err(VestingError::NotInitialized);
+        }
+        Ok(get_pending_upgrade(&env))
     }
 }
 

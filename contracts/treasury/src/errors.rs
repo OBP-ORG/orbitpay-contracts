@@ -48,4 +48,21 @@ pub enum TreasuryError {
     /// The signer list contains duplicate addresses.
     /// Triggered when initializing or updating signers with duplicate entries.
     DuplicateSigner = 14,
+    /// The treasury is currently paused.
+    /// Triggered when attempting withdrawals or deposits during pause state.
+    Paused = 15,
+    /// Upgrade proposal not found.
+    UpgradeProposalNotFound = 16,
+    /// Upgrade proposal not in pending state.
+    UpgradeProposalNotPending = 17,
+    /// Upgrade already executed.
+    UpgradeAlreadyExecuted = 18,
+    /// Signer change timelock not expired.
+    TimelockNotExpired = 19,
+    /// Invalid timelock duration.
+    InvalidTimelock = 20,
+    /// No pending admin change scheduled.
+    NoPendingAdminChange = 21,
+    /// Upgrade proposal already executed.
+    UpgradeProposalExecuted = 22,
 }

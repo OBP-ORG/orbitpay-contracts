@@ -31,4 +31,8 @@ pub enum StreamError {
     InsufficientBalance = 12,
     /// Arithmetic overflow/underflow occurred while computing stream amounts.
     ArithmeticError = 13,
+    /// No pending upgrade proposal found.
+    NoPendingUpgrade = 14,
+    /// The upgrade timelock has not expired yet.
+    TimelockNotExpired = 15,
 }

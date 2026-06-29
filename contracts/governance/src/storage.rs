@@ -7,7 +7,9 @@ pub(crate) const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_I
 pub(crate) const PERSISTENT_BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS; // 30 days
 pub(crate) const PERSISTENT_LIFETIME_THRESHOLD: u32 = PERSISTENT_BUMP_AMOUNT - DAY_IN_LEDGERS;
 
-use crate::types::Proposal;
+pub(crate) const MIN_UPGRADE_DELAY: u64 = 24 * 60 * 60; // 24 hours
+
+use crate::types::{Proposal, PendingUpgrade};
 
 /// Keys used to store data in the contract's ledger storage.
 #[contracttype]
@@ -21,6 +23,8 @@ pub enum DataKey {
     GracePeriod,
     VotingWeight(Address),
     TotalWeight,
+    PendingUpgradeWasm,
+    PendingUpgradeProposedAt,
 }
 
 // ── Admin helpers ────────────────────────────────────────────────
@@ -141,4 +145,29 @@ pub fn extend_voting_weight_ttl(env: &Env, address: &Address) {
         PERSISTENT_LIFETIME_THRESHOLD,
         PERSISTENT_BUMP_AMOUNT,
     );
+}
+
+// ── Upgrade timelock helpers ────────────────────────────────────────
+
+pub fn get_pending_upgrade(env: &Env) -> Option<PendingUpgrade> {
+    let wasm = env.storage().instance().get(&DataKey::PendingUpgradeWasm);
+    let proposed_at = env.storage().instance().get(&DataKey::PendingUpgradeProposedAt);
+    match (wasm, proposed_at) {
+        (Some(w), Some(t)) => Some(PendingUpgrade { wasm_hash: w, proposed_at: t }),
+        _ => None,
+    }
+}
+
+pub fn set_pending_upgrade(env: &Env, upgrade: &PendingUpgrade) {
+    env.storage()
+        .instance()
+        .set(&DataKey::PendingUpgradeWasm, &upgrade.wasm_hash);
+    env.storage()
+        .instance()
+        .set(&DataKey::PendingUpgradeProposedAt, &upgrade.proposed_at);
+}
+
+pub fn clear_pending_upgrade(env: &Env) {
+    env.storage().instance().remove(&DataKey::PendingUpgradeWasm);
+    env.storage().instance().remove(&DataKey::PendingUpgradeProposedAt);
 }

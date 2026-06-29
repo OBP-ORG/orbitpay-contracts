@@ -71,3 +71,11 @@ pub struct ClaimRecord {
     /// Unix timestamp when the claim occurred.
     pub timestamp: u64,
 }
+
+/// Pending upgrade proposal with timelock.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingUpgrade {
+    pub wasm_hash: soroban_sdk::BytesN<32>,
+    pub proposed_at: u64,
+}

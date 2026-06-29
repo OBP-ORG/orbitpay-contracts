@@ -48,6 +48,29 @@ This document describes the core invariants that the Treasury multisig contract 
 - **Error**: Returns `InvalidThreshold` error if removal would violate threshold.
 - **Rationale**: Prevents configuration states where approvals become impossible.
 
+## Security Invariants
+
+### 9. Pause Cannot Confiscate Funds
+- **Invariant**: Pause mechanism never modifies user token balances.
+- **Enforcement**: `pause` only sets `PauseState::Paused`; no token transfer occurs.
+- **Rationale**: Pause is an emergency safety mechanism, not a fund seizure tool. User funds remain in the contract and can be withdrawn after unpause.
+
+### 10. No Single-Key Upgrade Authority
+- **Invariant**: Contract upgrades require threshold signer approvals, not single admin.
+- **Enforcement**: `propose_upgrade()` requires signer authorization; `execute_upgrade()` requires Approved status from multisig.
+- **Rationale**: Prevents single point of failure; distributed control protects against compromised admin keys.
+
+### 11. Timelock Minimum Duration
+- **Invariant**: Signer change delay cannot be set below 1 day.
+- **Enforcement**: `update_signer_change_delay()` enforces `MIN_SIGNER_CHANGE_DELAY` check.
+- **Error**: Returns `InvalidTimelock` if below minimum.
+- **Rationale**: Provides meaningful window for detecting unauthorized admin changes.
+
+### 12. Emergency Admin Change Requires Threshold
+- **Invariant**: Emergency admin change still requires threshold approvals.
+- **Enforcement**: `propose_emergency_admin_change()` and `execute_emergency_admin_change()` require threshold approvals.
+- **Rationale**: Even in emergency, distributed control prevents unilateral takeover.
+
 ## Event Emission
 
 ### Signer Addition Event
@@ -65,6 +88,41 @@ This document describes the core invariants that the Treasury multisig contract 
 - **Data**: `()`
 - **Emitted by**: `update_threshold()`
 
+### Pause Proposal Event
+- **Topic**: `(pause_propose, proposer)`
+- **Data**: `(proposal_id, reason)`
+- **Emitted by**: `propose_pause()`
+
+### Pause Execution Event
+- **Topic**: `(pause_executed, signer)`
+- **Data**: `reason`
+- **Emitted by**: `approve_pause()` (when threshold met)
+
+### Unpause Proposal Event
+- **Topic**: `(unpause_propose, proposer)`
+- **Data**: `(proposal_id, reason)`
+- **Emitted by**: `propose_unpause()`
+
+### Unpause Execution Event
+- **Topic**: `(unpause_executed, signer)`
+- **Data**: `reason`
+- **Emitted by**: `approve_unpause()` (when threshold met)
+
+### Upgrade Proposal Event
+- **Topic**: `(upgrade_proposed,)`
+- **Data**: `(proposal_id, description)`
+- **Emitted by**: `propose_upgrade()`
+
+### Upgrade Approval Event
+- **Topic**: `(upgrade_approved, signer)`
+- **Data**: `proposal_id`
+- **Emitted by**: `approve_upgrade()`
+
+### Upgrade Execution Event
+- **Topic**: `(upgrade_executed, executor)`
+- **Data**: `(proposal_id, description)`
+- **Emitted by**: `execute_upgrade()`
+
 ## Withdrawal Lifecycle
 
 1. **Creation**: Withdrawal created with current signer set version. If threshold == 1, immediately approved.
@@ -78,3 +136,5 @@ This document describes the core invariants that the Treasury multisig contract 
 - **Threshold Selection**: Administrators should choose thresholds that balance security and operational needs. Higher thresholds provide more security but require more coordination.
 - **Signer Rotation**: When rotating signers, ensure pending withdrawals are either approved or cancelled before removing critical signers if needed.
 - **Version Tracking**: The signer set version provides an audit trail but does not restrict approvals based on current signer set. This design prioritizes withdrawal completion over strict version enforcement.
+- **Pause Design**: Pause is intentionally narrow-scoped. It blocks token transfers but preserves all user balances and allows signer management to continue for recovery.
+- **Emergency Procedures**: Emergency admin change requires same threshold as normal operations, just with signer-initiated flow instead of admin-initiated.

@@ -1,4 +1,4 @@
-use soroban_sdk::{contracterror};
+use soroban_sdk::contracterror;
 
 /// Error codes for the Governance contract.
 #[contracterror]
@@ -18,4 +18,6 @@ pub enum GovernanceError {
     InvalidAmount = 11,
     VotingPeriodExpired = 12,
     ProposalStillActive = 13,
+    NoPendingUpgrade = 14,
+    TimelockNotExpired = 15,
 }

@@ -7,21 +7,20 @@ pub(crate) const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_I
 pub(crate) const PERSISTENT_BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS; // 30 days
 pub(crate) const PERSISTENT_LIFETIME_THRESHOLD: u32 = PERSISTENT_BUMP_AMOUNT - DAY_IN_LEDGERS;
 
-use crate::types::PayrollStream;
+pub(crate) const MIN_UPGRADE_DELAY: u64 = 24 * 60 * 60; // 24 hours
+
+use crate::types::{PayrollStream, PendingUpgrade};
 
 /// Keys used to store data in the contract's ledger storage.
 #[contracttype]
 pub enum DataKey {
-    /// The admin/organization address — stored in Instance storage.
     Admin,
-    /// Running count of streams created — stored in Instance storage.
     StreamCount,
-    /// A specific stream by ID — stored in Persistent storage.
     Stream(u32),
-    /// List of stream IDs for a specific sender — stored in Persistent storage.
     SenderStreams(Address),
-    /// List of stream IDs for a specific recipient — stored in Persistent storage.
     RecipientStreams(Address),
+    PendingUpgradeWasm,
+    PendingUpgradeProposedAt,
 }
 
 // ── Admin helpers ────────────────────────────────────────────────
@@ -123,4 +122,29 @@ pub fn extend_recipient_streams_ttl(env: &Env, recipient: &Address) {
         PERSISTENT_LIFETIME_THRESHOLD,
         PERSISTENT_BUMP_AMOUNT,
     );
+}
+
+// ── Upgrade timelock helpers ────────────────────────────────────────
+
+pub fn get_pending_upgrade(env: &Env) -> Option<PendingUpgrade> {
+    let wasm = env.storage().instance().get(&DataKey::PendingUpgradeWasm);
+    let proposed_at = env.storage().instance().get(&DataKey::PendingUpgradeProposedAt);
+    match (wasm, proposed_at) {
+        (Some(w), Some(t)) => Some(PendingUpgrade { wasm_hash: w, proposed_at: t }),
+        _ => None,
+    }
+}
+
+pub fn set_pending_upgrade(env: &Env, upgrade: &PendingUpgrade) {
+    env.storage()
+        .instance()
+        .set(&DataKey::PendingUpgradeWasm, &upgrade.wasm_hash);
+    env.storage()
+        .instance()
+        .set(&DataKey::PendingUpgradeProposedAt, &upgrade.proposed_at);
+}
+
+pub fn clear_pending_upgrade(env: &Env) {
+    env.storage().instance().remove(&DataKey::PendingUpgradeWasm);
+    env.storage().instance().remove(&DataKey::PendingUpgradeProposedAt);
 }

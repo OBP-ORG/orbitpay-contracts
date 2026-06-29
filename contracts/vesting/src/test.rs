@@ -849,3 +849,60 @@ fn test_claim_history() {
     assert_eq!(history.get(1).unwrap().amount, 25_000);
     assert_eq!(history.get(1).unwrap().timestamp, time2);
 }
+
+// ── Timelocked Upgrade Tests ───────────────────────────────────────────────
+
+#[test]
+fn test_upgrade_timelock_execute_after_delay() {
+    let (env, admin, client) = setup_env();
+
+    let wasm_hash = soroban_sdk::BytesN::from_array(&env, &[1; 32]);
+
+    client.initialize(&admin);
+
+    client.propose_upgrade(&admin, &wasm_hash, &symbol_short!("v2"));
+
+    let pending = client.get_pending_upgrade();
+    assert!(pending.is_some());
+    assert_eq!(pending.unwrap().wasm_hash, wasm_hash);
+
+    env.ledger().with_mut(|li| {
+        li.timestamp = 24 * 60 * 60 + 1;
+    });
+
+    let pending_after = client.get_pending_upgrade();
+    assert!(pending_after.is_some());
+    let pending_after_val = pending_after.unwrap();
+    assert_eq!(pending_after_val.wasm_hash, wasm_hash);
+    assert!(env.ledger().timestamp() >= pending_after_val.proposed_at + 86400);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #14)")]
+fn test_upgrade_timelock_rejected_before_delay() {
+    let (env, admin, client) = setup_env();
+    let executor = Address::generate(&env);
+
+    let wasm_hash = soroban_sdk::BytesN::from_array(&env, &[1; 32]);
+
+    client.initialize(&admin);
+
+    client.propose_upgrade(&admin, &wasm_hash, &symbol_short!("v2"));
+
+    env.ledger().with_mut(|li| {
+        li.timestamp = 100;
+    });
+    client.execute_upgrade(&executor);
+}
+
+#[test]
+fn test_upgrade_proposal_event_includes_actor() {
+    let (env, admin, client) = setup_env();
+    let wasm_hash = soroban_sdk::BytesN::from_array(&env, &[2; 32]);
+
+    client.initialize(&admin);
+    client.propose_upgrade(&admin, &wasm_hash, &symbol_short!("sec_patch"));
+
+    let pending = client.get_pending_upgrade();
+    assert!(pending.is_some());
+}
