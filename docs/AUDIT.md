@@ -13,27 +13,38 @@ audit.
 | Function | Auth Required | Role Restriction | Mutates State | External Calls |
 |---|---|---|---|---|
 | `initialize` | `admin` | First-call only | Yes — storage init | None |
-| `deposit` | `from` | Any address | Yes — emits event | `token::transfer` (TODO) |
+| `deposit` | `from` | Any address | Yes — emits event | `token::transfer` |
 | `create_withdrawal` | `proposer` | Must be a signer | Yes — creates proposal | None |
 | `approve_withdrawal` | `signer` | Must be a signer | Yes — updates proposal | None |
 | `execute_withdrawal` | `executor` | Any address | Yes — transfers funds | `token::Client::transfer` |
 | `add_signer` | `admin` | Admin only | Yes — modifies signer list | None |
 | `remove_signer` | `admin` | Admin only | Yes — modifies signer list | None |
 | `update_threshold` | `admin` | Admin only | Yes — modifies config | None |
+| `propose_pause` | `proposer` | Must be a signer | Yes — creates pause proposal | None |
+| `approve_pause` | `signer` | Must be a signer | Yes — may activate pause | None |
+| `propose_unpause` | `proposer` | Must be a signer | Yes — creates unpause proposal | None |
+| `approve_unpause` | `signer` | Must be a signer | Yes — may deactivate pause | None |
+| `propose_upgrade` | `proposer` | Must be a signer | Yes — creates upgrade proposal | None |
+| `approve_upgrade` | `signer` | Must be a signer | Yes — may approve upgrade | None |
+| `execute_upgrade` | `executor` | Any address | Yes — WASM upgrade | `env.deployer()` |
+| `propose_admin_change` | `admin` | Admin only | Yes — schedules change | None |
+| `execute_admin_change` | `caller` | Any address | Yes — changes admin | None |
+| `cancel_admin_change` | `admin` | Admin only | Yes — cancels change | None |
+| `propose_emergency_admin_change` | `proposer` | Must be a signer | Yes — creates emergency proposal | None |
+| `execute_emergency_admin_change` | `executor` | Any address | Yes — replaces admin | None |
 | `get_admin` | None | None | No | None |
 | `get_signers` | None | None | No | None |
 | `get_threshold` | None | None | No | None |
 | `get_withdrawal` | None | None | No | None |
 | `get_proposal_count` | None | None | No | None |
 | `get_config` | None | None | No | None |
-| `upgrade` | `admin` | Admin only | Yes — WASM upgrade | `env.deployer()` |
 
 ### 1.2 Privileged Roles
 
 | Role | Storage Key | Set During | Scope |
 |---|---|---|---|
-| Admin | `DataKey::Admin` | `initialize` | Full control: signer mgmt, threshold, upgrade |
-| Signer | `DataKey::Signers` (Vec) | `initialize` / `add_signer` | Can create & approve withdrawals |
+| Admin | `DataKey::Admin` | `initialize` | Full control: signer mgmt, threshold, upgrade, admin change |
+| Signer | `DataKey::Signers` (Vec) | `initialize` / `add_signer` | Can create & approve withdrawals, propose/approve pause/upgrades |
 
 ### 1.3 Events Emitted
 
@@ -47,10 +58,22 @@ audit.
 | `s_add` | `("s_add", admin, signer, threshold, version)` | `(signer_count,)` | `add_signer` |
 | `s_remove` | `("s_remove", admin, signer, threshold, version)` | `(signer_count,)` | `remove_signer` |
 | `t_upd` | `("t_upd", admin, new_threshold, signer_count, version)` | `()` | `update_threshold` |
+| `pause_propose` | `("pause_propose", proposer)` | `(proposal_id, reason)` | `propose_pause` |
+| `pause_executed` | `("pause_executed", signer)` | `reason` | `approve_pause` |
+| `unpause_propose` | `("unpause_propose", proposer)` | `(proposal_id, reason)` | `propose_unpause` |
+| `unpause_executed` | `("unpause_executed", signer)` | `reason` | `approve_unpause` |
+| `upgrade_proposed` | `("upgrade_proposed",)` | `(proposal_id, description)` | `propose_upgrade` |
+| `upgrade_approved` | `("upgrade_approved", signer)` | `proposal_id` | `approve_upgrade` |
+| `upgrade_executed` | `("upgrade_executed", executor)` | `(proposal_id, description)` | `execute_upgrade` |
+| `admin_change` | `("admin_change", admin)` | `(effective_at, new_admin)` | `propose_admin_change` |
+| `admin_changed` | `("admin_changed", old_admin)` | `new_admin` | `execute_admin_change` |
+| `admin_change_cancelled` | `("admin_change_cancelled", admin)` | `()` | `cancel_admin_change` |
+| `emergency_admin_changed` | `("emergency_admin_changed", executor)` | `old_admin` | `execute_emergency_admin_change` |
+| `delay_updated` | `("delay_updated", admin)` | `new_delay` | `update_signer_change_delay` |
 
 ### 1.4 Error Codes
 
-14 errors (1–14): `AlreadyInitialized`, `NotInitialized`, `Unauthorized`, `InvalidThreshold`, `NotASigner`, `InvalidAmount`, `ProposalNotFound`, `ProposalNotPending`, `ProposalNotApproved`, `AlreadyApproved`, `AlreadyASigner`, `InsufficientBalance`, `ProposalExpired`, `DuplicateSigner`.
+22 errors (1–22): `AlreadyInitialized`, `NotInitialized`, `Unauthorized`, `InvalidThreshold`, `NotASigner`, `InvalidAmount`, `ProposalNotFound`, `ProposalNotPending`, `ProposalNotApproved`, `AlreadyApproved`, `AlreadyASigner`, `InsufficientBalance`, `ProposalExpired`, `DuplicateSigner`, `Paused`, `UpgradeProposalNotFound`, `UpgradeProposalNotPending`, `UpgradeAlreadyExecuted`, `TimelockNotExpired`, `InvalidTimelock`, `NoPendingAdminChange`, `UpgradeProposalExecuted`.
 
 ---
 
@@ -71,15 +94,17 @@ audit.
 | `get_streams_by_sender` | None | None | No | None |
 | `get_streams_by_recipient` | None | None | No | None |
 | `get_admin` | None | None | No | None |
-| `upgrade` | `admin` | Admin only | Yes | `env.deployer()` |
+| `propose_upgrade` | `admin` | Admin only | Yes — records pending | None |
+| `execute_upgrade` | `executor` | Any address | Yes — WASM upgrade | `env.deployer()` |
+| `get_pending_upgrade` | None | None | No | None |
 
 ### 2.2 Privileged Roles
 
 | Role | Storage Key | Scope |
 |---|---|---|
-| Admin | `DataKey::Admin` | Upgrade WASM |
-| Sender | `DataKey::SenderStreams(Address)` | Create/cancel their own streams |
-| Recipient | `DataKey::RecipientStreams(Address)` | Claim tokens from their streams |
+| Admin | `DataKey::Admin` | Propose upgrades |
+| Sender | `DataKey::SenderStreams` | Create/cancel their own streams |
+| Recipient | `DataKey::RecipientStreams` | Claim tokens from their streams |
 
 ### 2.3 Events Emitted
 
@@ -90,14 +115,16 @@ audit.
 | `b_create` | `("b_create", sender)` | `stream_ids: Vec<u32>` | `create_batch_streams` |
 | `claim` | `("claim", recipient)` | `claimable: i128` | `claim` |
 | `cancel` | `("cancel", sender)` | `stream_id: u32` | `cancel_stream` |
+| `upgrade_proposed` | `("upgrade_proposed",)` | `(description, proposed_at)` | `propose_upgrade` |
+| `upgrade_executed` | `("upgrade_executed", executor)` | `()` | `execute_upgrade` |
 
 ### 2.4 Error Codes
 
-13 errors (1–13): `AlreadyInitialized`, `NotInitialized`, `Unauthorized`, `InvalidAmount`, `InvalidDuration`, `StreamNotFound`, `StreamAlreadyCancelled`, `StreamCompleted`, `NothingToClaim`, `InvalidStartTime`, `InvalidRecipient`, `InsufficientBalance`, `ArithmeticError`.
+15 errors (1–15): `AlreadyInitialized`, `NotInitialized`, `Unauthorized`, `InvalidAmount`, `InvalidDuration`, `StreamNotFound`, `StreamAlreadyCancelled`, `StreamCompleted`, `NothingToClaim`, `InvalidStartTime`, `InvalidRecipient`, `InsufficientBalance`, `ArithmeticError`, `NoPendingUpgrade`, `TimelockNotExpired`.
 
-### 2.5 Known Issues
+### 2.5 Known Issues / Fixes
 
-- `create_stream` performs a double token transfer (line 73 and line 75 duplicate). Audit should flag this as potential double-spend.
+- **FIXED**: `claim` previously performed a double token transfer (lines 240–244 in old code). This has been corrected to a single `token_client.transfer` call.
 
 ---
 
@@ -118,15 +145,17 @@ audit.
 | `get_claim_history` | None | None | No | None |
 | `get_schedule_count` | None | None | No | None |
 | `get_admin` | None | None | No | None |
-| `upgrade` | `admin` | Admin only | Yes | `env.deployer()` |
+| `propose_upgrade` | `admin` | Admin only | Yes — records pending | None |
+| `execute_upgrade` | `executor` | Any address | Yes — WASM upgrade | `env.deployer()` |
+| `get_pending_upgrade` | None | None | No | None |
 
 ### 3.2 Privileged Roles
 
 | Role | Storage Key | Scope |
 |---|---|---|
-| Admin | `DataKey::Admin` | Upgrade WASM |
-| Grantor | `DataKey::GrantorSchedules(Address)` | Create/revoke their schedules |
-| Beneficiary | `DataKey::BeneficiarySchedules(Address)` | Claim from their schedules |
+| Admin | `DataKey::Admin` | Propose upgrades |
+| Grantor | `DataKey::GrantorSchedules` | Create/revoke their schedules |
+| Beneficiary | `DataKey::BeneficiarySchedules` | Claim from their schedules |
 
 ### 3.3 Events Emitted
 
@@ -137,10 +166,12 @@ audit.
 | `v_claim` | `("v_claim", beneficiary, schedule_id)` | `claimable: i128` | `claim` |
 | `v_fully` | `("v_fully", schedule_id)` | `()` | Fully claimed |
 | `v_revoke` | `("v_revoke", grantor, schedule_id)` | `unvested: i128` | `revoke` |
+| `upgrade_proposed` | `("upgrade_proposed",)` | `(description, proposed_at)` | `propose_upgrade` |
+| `upgrade_executed` | `("upgrade_executed", executor)` | `()` | `execute_upgrade` |
 
 ### 3.4 Error Codes
 
-12 errors (1–12): `AlreadyInitialized`, `NotInitialized`, `Unauthorized`, `InvalidAmount`, `InvalidSchedule`, `ScheduleNotFound`, `ScheduleRevoked`, `NothingToClaim`, `CliffNotReached`, `AlreadyFullyClaimed`, `InvalidCliffDuration`, `InsufficientBalance`.
+14 errors (1–14): `AlreadyInitialized`, `NotInitialized`, `Unauthorized`, `InvalidAmount`, `InvalidSchedule`, `ScheduleNotFound`, `ScheduleRevoked`, `NothingToClaim`, `CliffNotReached`, `AlreadyFullyClaimed`, `InvalidCliffDuration`, `InsufficientBalance`, `NoPendingUpgrade`, `TimelockNotExpired`.
 
 ---
 
@@ -165,13 +196,15 @@ audit.
 | `get_config` | None | None | No | None |
 | `get_proposal_status` | None | None | No | None |
 | `get_admin` | None | None | No | None |
-| `upgrade` | `admin` | Admin only | Yes | `env.deployer()` |
+| `propose_upgrade` | `admin` | Admin only | Yes — records pending | None |
+| `execute_upgrade` | `executor` | Any address | Yes — WASM upgrade | `env.deployer()` |
+| `get_pending_upgrade` | None | None | No | None |
 
 ### 4.2 Privileged Roles
 
 | Role | Storage Key | Scope |
 |---|---|---|
-| Admin | `DataKey::Admin` | Full control: member mgmt, weight, execute, upgrade |
+| Admin | `DataKey::Admin` | Member management, weight, execute, proposal upgrades |
 | Member | `DataKey::Members` (Vec) | Create proposals, vote |
 
 ### 4.3 Snapshot Immutability
@@ -194,10 +227,12 @@ All subsequent vote-eligibility and finalization checks use the **snapshot**, no
 | `m_add` | `("m_add",)` | `new_member: Address` | `add_member` |
 | `m_remove` | `("m_remove",)` | `member: Address` | `remove_member` |
 | `w_set` | `("w_set", member)` | `new_weight: u128` | `set_voting_weight` |
+| `upgrade_proposed` | `("upgrade_proposed",)` | `(description, proposed_at)` | `propose_upgrade` |
+| `upgrade_executed` | `("upgrade_executed", executor)` | `()` | `execute_upgrade` |
 
 ### 4.5 Error Codes
 
-13 errors (1–13): `AlreadyInitialized`, `NotInitialized`, `Unauthorized`, `ProposalNotFound`, `VotingNotActive`, `AlreadyVoted`, `NotAMember`, `QuorumNotReached`, `ProposalNotApproved`, `ProposalAlreadyExecuted`, `InvalidAmount`, `VotingPeriodExpired`, `ProposalStillActive`.
+15 errors (1–15): `AlreadyInitialized`, `NotInitialized`, `Unauthorized`, `ProposalNotFound`, `VotingNotActive`, `AlreadyVoted`, `NotAMember`, `QuorumNotReached`, `ProposalNotApproved`, `ProposalAlreadyExecuted`, `InvalidAmount`, `VotingPeriodExpired`, `ProposalStillActive`, `NoPendingUpgrade`, `TimelockNotExpired`.
 
 ---
 
@@ -212,14 +247,14 @@ Governance ─── TODO: transfer from treasury ──→ Treasury?
 All contracts ─── upgrade ──→ env.deployer().update_current_contract_wasm()
 ```
 
-**Note:** Governance's `execute` function has a TODO for transferring funds from Treasury. The cross-contract call path (Governance → Treasury) is not yet implemented.
+**Note:** Governance's `execute` function has a TODO for transferring funds from Treasury. The cross-contract call path (Governance → Treasury) is not yet implemented. All upgrades in Payroll Stream, Vesting, and Governance now require a 24-hour timelock after `propose_upgrade`.
 
 ---
 
 ## 6. Audit Focus Areas
 
-1. **Treasury** — Multi-sig approval: threshold enforcement, signer versioning for in-flight proposals, duplicate signer checks, TTL management.
-2. **Payroll Stream** — Double transfer bug in `create_stream`, arithmetic in `calculate_claimable`, batch stream validation.
-3. **Vesting** — Cliff + linear vesting math, revocation with partial refunds, integer rounding.
-4. **Governance** — Snapshot immutability guarantees, quorum calculation with weighted voting, grace period edge cases.
+1. **Treasury** — Multi-sig approval: threshold enforcement, signer versioning for in-flight proposals, duplicate signer checks, TTL management, pause state machine correctness.
+2. **Payroll Stream** — Fixed double transfer in `claim`; arithmetic in `calculate_claimable`, batch stream validation, timelock upgrade flow.
+3. **Vesting** — Cliff + linear vesting math, revocation with partial refunds, integer rounding, timelock upgrade flow.
+4. **Governance** — Snapshot immutability guarantees, quorum calculation with weighted voting, grace period edge cases, timelock upgrade flow.
 5. **All Contracts** — WASM upgrade access control, initialization guard (one-shot), storage TTL extension consistency.

@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, symbol_short, token, Address, Env, Vec};
+use soroban_sdk::{contract, contractimpl, symbol_short, token, Address, BytesN, Env, Symbol, Vec};
 
 mod errors;
 mod storage;
@@ -9,8 +9,10 @@ use errors::StreamError;
 use storage::{
     add_recipient_stream, add_sender_stream, get_admin, get_recipient_streams, get_sender_streams,
     get_stream, get_stream_count, has_admin, set_admin, set_stream, set_stream_count,
+    get_pending_upgrade, set_pending_upgrade, clear_pending_upgrade, MIN_UPGRADE_DELAY,
+    extend_instance_ttl,
 };
-use types::{CreateStreamParams, PayrollStream, StreamStatus};
+use types::{CreateStreamParams, PayrollStream, StreamStatus, PendingUpgrade};
 
 #[contract]
 pub struct PayrollStreamContract;
@@ -237,9 +239,6 @@ impl PayrollStreamContract {
             stream.status = StreamStatus::Completed;
         }
 
-        token::Client::new(&env, &stream.token)
-            .transfer(&env.current_contract_address(), &recipient, &claimable);
-
         set_stream(&env, stream_id, &stream);
         token_client.transfer(&contract_address, &recipient, &claimable);
 
@@ -401,19 +400,70 @@ impl PayrollStreamContract {
         Ok(get_admin(&env))
     }
 
-    /// Upgrade the contract WASM. Restricted to admin.
-    pub fn upgrade(
+    // ── Timelocked Upgrade ─────────────────────────────────────────
+
+    /// Propose a WASM upgrade. Admin only. The upgrade cannot be executed
+    /// until MIN_UPGRADE_DELAY has elapsed.
+    /// # Authorization Policy
+    /// - **Caller:** The `admin`.
+    /// - **Policy:** `admin.require_auth()` is enforced.
+    pub fn propose_upgrade(
         env: Env,
         admin: Address,
-        new_wasm_hash: soroban_sdk::BytesN<32>,
+        wasm_hash: BytesN<32>,
+        description: Symbol,
     ) -> Result<(), StreamError> {
         let stored_admin = get_admin(&env);
         if admin != stored_admin {
             return Err(StreamError::Unauthorized);
         }
         admin.require_auth();
-        env.deployer().update_current_contract_wasm(new_wasm_hash);
+
+        let pending = PendingUpgrade {
+            wasm_hash,
+            proposed_at: env.ledger().timestamp(),
+        };
+        set_pending_upgrade(&env, &pending);
+        extend_instance_ttl(&env);
+
+        env.events().publish(
+            (symbol_short!("upg_prop"),),
+            (description, pending.proposed_at),
+        );
+
         Ok(())
+    }
+
+    /// Execute a pending WASM upgrade after the timelock delay has expired.
+    /// # Authorization Policy
+    /// - **Caller:** The `executor`.
+    /// - **Policy:** `executor.require_auth()` ensures the transaction is authorized.
+    pub fn execute_upgrade(env: Env, executor: Address) -> Result<(), StreamError> {
+        executor.require_auth();
+
+        let pending = get_pending_upgrade(&env).ok_or(StreamError::NoPendingUpgrade)?;
+        let now = env.ledger().timestamp();
+
+        if now < pending.proposed_at + MIN_UPGRADE_DELAY {
+            return Err(StreamError::TimelockNotExpired);
+        }
+
+        env.deployer().update_current_contract_wasm(pending.wasm_hash);
+        clear_pending_upgrade(&env);
+        extend_instance_ttl(&env);
+
+        env.events()
+            .publish((symbol_short!("upg_exec"), executor), ());
+
+        Ok(())
+    }
+
+    /// Get the pending upgrade proposal, if any.
+    pub fn get_pending_upgrade(env: Env) -> Result<Option<PendingUpgrade>, StreamError> {
+        if !has_admin(&env) {
+            return Err(StreamError::NotInitialized);
+        }
+        Ok(get_pending_upgrade(&env))
     }
 }
 
