@@ -579,3 +579,109 @@ fn test_snapshot_removed_member_retains_vote_eligibility() {
     let status = client.finalize(&admin, &proposal_id);
     assert_eq!(status, ProposalStatus::Approved);
 }
+
+fn create_token_contract<'a>(e: &Env, admin: &Address) -> token::StellarAssetClient<'a> {
+    let contract_addr = e
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
+    token::StellarAssetClient::new(e, &contract_addr)
+}
+
+fn create_token_client<'a>(e: &Env, contract_addr: &Address) -> token::Client<'a> {
+    token::Client::new(e, contract_addr)
+}
+
+#[test]
+fn test_execute_full_flow() {
+    let (env, admin, client) = setup_env();
+    let member1 = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let mut members = Vec::new(&env);
+    members.push_back(member1.clone());
+
+    let token_admin = Address::generate(&env);
+    let token_admin_client = create_token_contract(&env, &token_admin);
+    let token = token_admin_client.address.clone();
+    let token_client = create_token_client(&env, &token);
+
+    // Give the governance contract some funds
+    let initial_balance = 100_000_i128;
+    token_admin_client.mint(&client.address, &initial_balance);
+
+    let voting_duration = 1000u64;
+    let grace_period = 500u64;
+    client.initialize(&admin, &members, &51, &voting_duration, &grace_period);
+
+    env.ledger().with_mut(|li| {
+        li.timestamp = 1000;
+    });
+
+    let proposal_amount = 25_000_i128;
+    let proposal_id = client.create_proposal(
+        &member1,
+        &symbol_short!("fund"),
+        &token,
+        &proposal_amount,
+        &recipient,
+    );
+
+    client.vote(&member1, &proposal_id, &VoteChoice::Yes);
+
+    env.ledger().with_mut(|li| {
+        li.timestamp = 1000 + voting_duration + 1;
+    });
+
+    let status = client.finalize(&admin, &proposal_id);
+    assert_eq!(status, ProposalStatus::Approved);
+
+    client.execute(&admin, &proposal_id);
+
+    let proposal = client.get_proposal(&proposal_id);
+    assert_eq!(proposal.status, ProposalStatus::Executed);
+
+    assert_eq!(token_client.balance(&recipient), proposal_amount);
+    assert_eq!(token_client.balance(&client.address), initial_balance - proposal_amount);
+}
+
+#[test]
+#[should_panic]
+fn test_execute_insufficient_balance() {
+    let (env, admin, client) = setup_env();
+    let member1 = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let mut members = Vec::new(&env);
+    members.push_back(member1.clone());
+
+    let token_admin = Address::generate(&env);
+    let token_admin_client = create_token_contract(&env, &token_admin);
+    let token = token_admin_client.address.clone();
+
+    // Do NOT mint funds to the governance contract
+    let voting_duration = 1000u64;
+    let grace_period = 500u64;
+    client.initialize(&admin, &members, &51, &voting_duration, &grace_period);
+
+    env.ledger().with_mut(|li| {
+        li.timestamp = 1000;
+    });
+
+    let proposal_amount = 25_000_i128;
+    let proposal_id = client.create_proposal(
+        &member1,
+        &symbol_short!("fund"),
+        &token,
+        &proposal_amount,
+        &recipient,
+    );
+
+    client.vote(&member1, &proposal_id, &VoteChoice::Yes);
+
+    env.ledger().with_mut(|li| {
+        li.timestamp = 1000 + voting_duration + 1;
+    });
+
+    client.finalize(&admin, &proposal_id);
+
+    // This should panic due to insufficient balance
+    client.execute(&admin, &proposal_id);
+}

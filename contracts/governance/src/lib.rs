@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, Vec, symbol_short};
+use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, Vec, symbol_short, token};
 
 mod errors;
 mod storage;
@@ -287,9 +287,8 @@ impl GovernanceContract {
             return Err(GovernanceError::ProposalNotApproved);
         }
 
-        // TODO: Transfer funds from treasury to recipient (contributor task SC-24)
-        // token::Client::new(&env, &proposal.token)
-        //     .transfer(&env.current_contract_address(), &proposal.recipient, &proposal.amount);
+        token::Client::new(&env, &proposal.token)
+            .transfer(&env.current_contract_address(), &proposal.recipient, &proposal.amount);
 
         proposal.status = ProposalStatus::Executed;
         set_proposal(&env, proposal_id, &proposal);
