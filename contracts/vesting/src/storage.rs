@@ -1,5 +1,12 @@
 use soroban_sdk::{contracttype, Address, Env, Vec};
 
+pub(crate) const DAY_IN_LEDGERS: u32 = 17280;
+pub(crate) const INSTANCE_BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS; // 30 days
+pub(crate) const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
+
+pub(crate) const PERSISTENT_BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS; // 30 days
+pub(crate) const PERSISTENT_LIFETIME_THRESHOLD: u32 = PERSISTENT_BUMP_AMOUNT - DAY_IN_LEDGERS;
+
 use crate::types::{VestingSchedule, ClaimRecord};
 
 /// Keys used to store data in the contract's ledger storage.
@@ -94,4 +101,44 @@ pub fn add_claim_record(env: &Env, schedule_id: u32, amount: i128, timestamp: u6
     env.storage()
         .persistent()
         .set(&DataKey::ClaimHistory(schedule_id), &history);
+}
+
+// ── TTL helpers ──────────────────────────────────────────────────
+
+pub fn extend_instance_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+}
+
+pub fn extend_schedule_ttl(env: &Env, id: u32) {
+    env.storage().persistent().extend_ttl(
+        &DataKey::Schedule(id),
+        PERSISTENT_LIFETIME_THRESHOLD,
+        PERSISTENT_BUMP_AMOUNT,
+    );
+}
+
+pub fn extend_grantor_schedules_ttl(env: &Env, grantor: &Address) {
+    env.storage().persistent().extend_ttl(
+        &DataKey::GrantorSchedules(grantor.clone()),
+        PERSISTENT_LIFETIME_THRESHOLD,
+        PERSISTENT_BUMP_AMOUNT,
+    );
+}
+
+pub fn extend_beneficiary_schedules_ttl(env: &Env, beneficiary: &Address) {
+    env.storage().persistent().extend_ttl(
+        &DataKey::BeneficiarySchedules(beneficiary.clone()),
+        PERSISTENT_LIFETIME_THRESHOLD,
+        PERSISTENT_BUMP_AMOUNT,
+    );
+}
+
+pub fn extend_claim_history_ttl(env: &Env, schedule_id: u32) {
+    env.storage().persistent().extend_ttl(
+        &DataKey::ClaimHistory(schedule_id),
+        PERSISTENT_LIFETIME_THRESHOLD,
+        PERSISTENT_BUMP_AMOUNT,
+    );
 }

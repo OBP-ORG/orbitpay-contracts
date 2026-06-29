@@ -11,6 +11,8 @@ use storage::{
     get_schedule, set_schedule, add_grantor_schedule, add_beneficiary_schedule,
     get_grantor_schedules, get_beneficiary_schedules,
     get_claim_history as storage_get_claim_history, add_claim_record,
+    extend_instance_ttl, extend_schedule_ttl, extend_grantor_schedules_ttl,
+    extend_beneficiary_schedules_ttl, extend_claim_history_ttl,
 };
 use types::{VestingSchedule, VestingStatus, VestingProgress, ClaimRecord};
 
@@ -32,6 +34,8 @@ impl VestingContract {
             (symbol_short!("init"),),
             admin.clone(),
         );
+
+        extend_instance_ttl(&env);
 
         Ok(())
     }
@@ -115,6 +119,11 @@ impl VestingContract {
             (total_amount, cliff_duration, total_duration),
         );
 
+        extend_instance_ttl(&env);
+        extend_schedule_ttl(&env, schedule_id);
+        extend_grantor_schedules_ttl(&env, &grantor);
+        extend_beneficiary_schedules_ttl(&env, &beneficiary);
+
         Ok(schedule_id)
     }
 
@@ -173,6 +182,10 @@ impl VestingContract {
             );
         }
 
+        extend_instance_ttl(&env);
+        extend_schedule_ttl(&env, schedule_id);
+        extend_claim_history_ttl(&env, schedule_id);
+
         Ok(claimable)
     }
 
@@ -225,6 +238,9 @@ impl VestingContract {
             (symbol_short!("v_revoke"), grantor.clone(), schedule_id),
             unvested,
         );
+
+        extend_instance_ttl(&env);
+        extend_schedule_ttl(&env, schedule_id);
 
         Ok(unvested)
     }

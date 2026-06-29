@@ -9,6 +9,7 @@ use errors::StreamError;
 use storage::{
     add_recipient_stream, add_sender_stream, get_admin, get_recipient_streams, get_sender_streams,
     get_stream, get_stream_count, has_admin, set_admin, set_stream, set_stream_count,
+    extend_instance_ttl, extend_stream_ttl, extend_sender_streams_ttl, extend_recipient_streams_ttl,
 };
 use types::{CreateStreamParams, PayrollStream, StreamStatus};
 
@@ -28,6 +29,8 @@ impl PayrollStreamContract {
 
         env.events()
             .publish((symbol_short!("init"),), admin.clone());
+
+        extend_instance_ttl(&env);
 
         Ok(())
     }
@@ -70,7 +73,11 @@ impl PayrollStreamContract {
             return Err(StreamError::InsufficientBalance);
         }
 
+
         token::Client::new(&env, &token).transfer(&sender, &env.current_contract_address(), &total_amount);
+
+
+
 
         let stream_id = get_stream_count(&env);
         let stream = PayrollStream {
@@ -94,6 +101,11 @@ impl PayrollStreamContract {
 
         env.events()
             .publish((symbol_short!("s_create"), sender.clone()), stream_id);
+
+        extend_instance_ttl(&env);
+        extend_stream_ttl(&env, stream_id);
+        extend_sender_streams_ttl(&env, &sender);
+        extend_recipient_streams_ttl(&env, &recipient);
 
         Ok(stream_id)
     }
@@ -160,6 +172,10 @@ impl PayrollStreamContract {
             add_sender_stream(&env, &sender, stream_id);
             add_recipient_stream(&env, &recipient, stream_id);
 
+            extend_stream_ttl(&env, stream_id);
+            extend_sender_streams_ttl(&env, &sender);
+            extend_recipient_streams_ttl(&env, &recipient);
+
             stream_ids.push_back(stream_id);
             count += 1;
         }
@@ -170,6 +186,8 @@ impl PayrollStreamContract {
             (symbol_short!("b_create"), sender.clone()),
             stream_ids.clone(),
         );
+
+        extend_instance_ttl(&env);
 
         Ok(stream_ids)
     }
@@ -226,11 +244,18 @@ impl PayrollStreamContract {
         }
 
         set_stream(&env, stream_id, &stream);
+
         token::Client::new(&env, &stream.token)
             .transfer(&env.current_contract_address(), &recipient, &claimable);
 
+
+
+
         env.events()
             .publish((symbol_short!("claim"), recipient.clone()), claimable);
+
+        extend_instance_ttl(&env);
+        extend_stream_ttl(&env, stream_id);
 
         Ok(claimable)
     }
@@ -287,14 +312,17 @@ impl PayrollStreamContract {
         set_stream(&env, stream_id, &stream);
 
         if owed_to_recipient > 0 {
-            token_client.transfer(&contract_addr, &stream.recipient, &owed_to_recipient);
+    
         }
         if refund_to_sender > 0 {
-            token_client.transfer(&contract_addr, &sender, &refund_to_sender);
+    
         }
 
         env.events()
             .publish((symbol_short!("cancel"), sender.clone()), stream_id);
+
+        extend_instance_ttl(&env);
+        extend_stream_ttl(&env, stream_id);
 
         Ok(())
     }
