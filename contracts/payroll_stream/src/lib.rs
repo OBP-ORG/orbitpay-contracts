@@ -70,8 +70,6 @@ impl PayrollStreamContract {
             return Err(StreamError::InsufficientBalance);
         }
 
-        token_client.transfer(&sender, &contract_address, &total_amount);
-
         token::Client::new(&env, &token).transfer(&sender, &env.current_contract_address(), &total_amount);
 
         let stream_id = get_stream_count(&env);
@@ -227,11 +225,9 @@ impl PayrollStreamContract {
             stream.status = StreamStatus::Completed;
         }
 
+        set_stream(&env, stream_id, &stream);
         token::Client::new(&env, &stream.token)
             .transfer(&env.current_contract_address(), &recipient, &claimable);
-
-        set_stream(&env, stream_id, &stream);
-        token_client.transfer(&contract_address, &recipient, &claimable);
 
         env.events()
             .publish((symbol_short!("claim"), recipient.clone()), claimable);
