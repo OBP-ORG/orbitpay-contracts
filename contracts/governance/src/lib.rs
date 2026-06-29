@@ -26,6 +26,10 @@ pub struct GovernanceContract;
 impl GovernanceContract {
     /// Initialize the governance contract.
     ///
+    /// # Authorization Policy
+    /// - **Caller:** Any address, provided they have the signature of the `admin` being set.
+    /// - **Policy:** `admin.require_auth()` ensures the admin consents.
+    ///
     /// # Arguments
     /// * `admin` - The DAO admin
     /// * `members` - Initial list of DAO members who can vote
@@ -66,6 +70,9 @@ impl GovernanceContract {
 
     /// Create a new budget proposal.
     /// Only DAO members can submit proposals.
+    /// # Authorization Policy
+    /// - **Caller:** A `proposer` who is an active member.
+    /// - **Policy:** `proposer.require_auth()` ensures the proposer authorizes the creation.
     pub fn create_proposal(
         env: Env,
         proposer: Address,
@@ -141,6 +148,9 @@ impl GovernanceContract {
     /// Cast a vote on an active proposal.
     /// Each member can only vote once per proposal.
     /// Eligibility and weight are taken from the proposal's snapshot, not live state.
+    /// # Authorization Policy
+    /// - **Caller:** The `voter` casting the vote.
+    /// - **Policy:** `voter.require_auth()` ensures the vote is authorized.
     pub fn vote(
         env: Env,
         voter: Address,
@@ -212,6 +222,9 @@ impl GovernanceContract {
 
     /// Finalize a proposal after the voting period has ended.
     /// Checks quorum and majority using the proposal's snapshot, not live config.
+    /// # Authorization Policy
+    /// - **Caller:** Any address (the `caller` is recorded).
+    /// - **Policy:** `caller.require_auth()` ensures the caller authorizes the transaction.
     pub fn finalize(
         env: Env,
         caller: Address,
@@ -282,6 +295,9 @@ impl GovernanceContract {
 
     /// Execute an approved proposal — disburse funds to the recipient.
     /// Can only be called by the admin after the proposal is finalized and approved.
+    /// # Authorization Policy
+    /// - **Caller:** The `admin`.
+    /// - **Policy:** `admin.require_auth()` ensures execution is authorized by the DAO admin.
     pub fn execute(
         env: Env,
         admin: Address,
@@ -322,6 +338,9 @@ impl GovernanceContract {
 
     /// Cancel a proposal. Only the original proposer can cancel.
     /// Can only cancel Active proposals.
+    /// # Authorization Policy
+    /// - **Caller:** The `proposer`.
+    /// - **Policy:** `proposer.require_auth()` ensures the proposer authorizes the cancellation.
     pub fn cancel_proposal(
         env: Env,
         proposer: Address,
@@ -358,6 +377,9 @@ impl GovernanceContract {
     }
 
     /// Add a new member to the DAO. Restricted to admin.
+    /// # Authorization Policy
+    /// - **Caller:** The `admin`.
+    /// - **Policy:** `admin.require_auth()` is enforced.
     pub fn add_member(env: Env, admin: Address, new_member: Address) -> Result<(), GovernanceError> {
         let stored_admin = get_admin(&env);
         if admin != stored_admin {
@@ -387,6 +409,9 @@ impl GovernanceContract {
     }
 
     /// Remove a member from the DAO. Restricted to admin.
+    /// # Authorization Policy
+    /// - **Caller:** The `admin`.
+    /// - **Policy:** `admin.require_auth()` is enforced.
     pub fn remove_member(env: Env, admin: Address, member: Address) -> Result<(), GovernanceError> {
         let stored_admin = get_admin(&env);
         if admin != stored_admin {
@@ -430,6 +455,9 @@ impl GovernanceContract {
     }
 
     /// Set a custom voting weight for a member. Restricted to admin.
+    /// # Authorization Policy
+    /// - **Caller:** The `admin`.
+    /// - **Policy:** `admin.require_auth()` is enforced.
     pub fn set_voting_weight(
         env: Env,
         admin: Address,

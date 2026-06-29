@@ -9,7 +9,6 @@ use errors::StreamError;
 use storage::{
     add_recipient_stream, add_sender_stream, get_admin, get_recipient_streams, get_sender_streams,
     get_stream, get_stream_count, has_admin, set_admin, set_stream, set_stream_count,
-    extend_instance_ttl, extend_stream_ttl, extend_sender_streams_ttl, extend_recipient_streams_ttl,
 };
 use types::{CreateStreamParams, PayrollStream, StreamStatus};
 
@@ -19,6 +18,9 @@ pub struct PayrollStreamContract;
 #[contractimpl]
 impl PayrollStreamContract {
     /// Initialize the payroll stream contract with an organization admin.
+    /// # Authorization Policy
+    /// - **Caller:** Any address, provided they have the signature of the `admin` being set.
+    /// - **Policy:** `admin.require_auth()` ensures the admin consents to being the administrator.
     pub fn initialize(env: Env, admin: Address) -> Result<(), StreamError> {
         if has_admin(&env) {
             return Err(StreamError::AlreadyInitialized);
@@ -30,13 +32,14 @@ impl PayrollStreamContract {
         env.events()
             .publish((symbol_short!("init"),), admin.clone());
 
-        extend_instance_ttl(&env);
-
         Ok(())
     }
 
     /// Create a new payment stream to an employee/recipient.
     /// Tokens are linearly streamed from `start_time` to `end_time`.
+    /// # Authorization Policy
+    /// - **Caller:** Any address acting as the sender.
+    /// - **Policy:** `sender.require_auth()` ensures the sender authorizes the stream creation and token transfer.
     pub fn create_stream(
         env: Env,
         sender: Address,
@@ -73,11 +76,7 @@ impl PayrollStreamContract {
             return Err(StreamError::InsufficientBalance);
         }
 
-
-        token::Client::new(&env, &token).transfer(&sender, &env.current_contract_address(), &total_amount);
-
-
-
+        token_client.transfer(&sender, &contract_address, &total_amount);
 
         let stream_id = get_stream_count(&env);
         let stream = PayrollStream {
@@ -102,16 +101,14 @@ impl PayrollStreamContract {
         env.events()
             .publish((symbol_short!("s_create"), sender.clone()), stream_id);
 
-        extend_instance_ttl(&env);
-        extend_stream_ttl(&env, stream_id);
-        extend_sender_streams_ttl(&env, &sender);
-        extend_recipient_streams_ttl(&env, &recipient);
-
         Ok(stream_id)
     }
 
     /// Create multiple payment streams in a single transaction.
     /// Emits a single batch event with all created stream IDs.
+    /// # Authorization Policy
+    /// - **Caller:** Any address acting as the sender.
+    /// - **Policy:** `sender.require_auth()` ensures the sender authorizes the batch stream creation and token transfers.
     pub fn create_batch_streams(
         env: Env,
         sender: Address,
@@ -172,10 +169,6 @@ impl PayrollStreamContract {
             add_sender_stream(&env, &sender, stream_id);
             add_recipient_stream(&env, &recipient, stream_id);
 
-            extend_stream_ttl(&env, stream_id);
-            extend_sender_streams_ttl(&env, &sender);
-            extend_recipient_streams_ttl(&env, &recipient);
-
             stream_ids.push_back(stream_id);
             count += 1;
         }
@@ -187,13 +180,14 @@ impl PayrollStreamContract {
             stream_ids.clone(),
         );
 
-        extend_instance_ttl(&env);
-
         Ok(stream_ids)
     }
 
     /// Claim accrued tokens from an active stream.
     /// The recipient can claim at any point — they receive tokens proportional to elapsed time.
+    /// # Authorization Policy
+    /// - **Caller:** The `recipient` of the stream.
+    /// - **Policy:** `recipient.require_auth()` ensures the recipient authorizes the claim.
     pub fn claim(env: Env, recipient: Address, stream_id: u32) -> Result<i128, StreamError> {
         if !has_admin(&env) {
             return Err(StreamError::NotInitialized);
@@ -243,25 +237,23 @@ impl PayrollStreamContract {
             stream.status = StreamStatus::Completed;
         }
 
-        set_stream(&env, stream_id, &stream);
-
         token::Client::new(&env, &stream.token)
             .transfer(&env.current_contract_address(), &recipient, &claimable);
 
-
-
+        set_stream(&env, stream_id, &stream);
+        token_client.transfer(&contract_address, &recipient, &claimable);
 
         env.events()
             .publish((symbol_short!("claim"), recipient.clone()), claimable);
-
-        extend_instance_ttl(&env);
-        extend_stream_ttl(&env, stream_id);
 
         Ok(claimable)
     }
 
     /// Cancel a stream. Only the sender (organization) can cancel.
     /// Unclaimed tokens are returned to the sender. Already-claimed tokens stay with recipient.
+    /// # Authorization Policy
+    /// - **Caller:** The `sender` of the stream.
+    /// - **Policy:** `sender.require_auth()` ensures the sender authorizes the cancellation.
     pub fn cancel_stream(env: Env, sender: Address, stream_id: u32) -> Result<(), StreamError> {
         if !has_admin(&env) {
             return Err(StreamError::NotInitialized);
@@ -312,17 +304,14 @@ impl PayrollStreamContract {
         set_stream(&env, stream_id, &stream);
 
         if owed_to_recipient > 0 {
-    
+            token_client.transfer(&contract_addr, &stream.recipient, &owed_to_recipient);
         }
         if refund_to_sender > 0 {
-    
+            token_client.transfer(&contract_addr, &sender, &refund_to_sender);
         }
 
         env.events()
             .publish((symbol_short!("cancel"), sender.clone()), stream_id);
-
-        extend_instance_ttl(&env);
-        extend_stream_ttl(&env, stream_id);
 
         Ok(())
     }

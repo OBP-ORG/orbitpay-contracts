@@ -22,6 +22,9 @@ pub struct VestingContract;
 #[contractimpl]
 impl VestingContract {
     /// Initialize the vesting contract with an admin.
+    /// # Authorization Policy
+    /// - **Caller:** Any address, provided they have the signature of the `admin` being set.
+    /// - **Policy:** `admin.require_auth()` ensures the admin consents to being the administrator.
     pub fn initialize(env: Env, admin: Address) -> Result<(), VestingError> {
         if has_admin(&env) {
             return Err(VestingError::AlreadyInitialized);
@@ -41,6 +44,10 @@ impl VestingContract {
     }
 
     /// Create a new vesting schedule with cliff + linear vesting.
+    ///
+    /// # Authorization Policy
+    /// - **Caller:** The `grantor`.
+    /// - **Policy:** `grantor.require_auth()` ensures the grantor authorizes the schedule creation and token transfer.
     ///
     /// # Arguments
     /// * `grantor` - The organization creating the schedule (must auth)
@@ -129,6 +136,9 @@ impl VestingContract {
 
     /// Claim vested tokens. The beneficiary can claim any tokens that have vested
     /// according to the cliff + linear schedule.
+    /// # Authorization Policy
+    /// - **Caller:** The `beneficiary`.
+    /// - **Policy:** `beneficiary.require_auth()` ensures the beneficiary authorizes the claim.
     pub fn claim(env: Env, beneficiary: Address, schedule_id: u32) -> Result<i128, VestingError> {
         if !has_admin(&env) {
             return Err(VestingError::NotInitialized);
@@ -191,6 +201,9 @@ impl VestingContract {
 
     /// Revoke a vesting schedule. Only the grantor can revoke, and only if `revocable` is true.
     /// Unvested tokens are returned to the grantor. Already-vested tokens remain claimable.
+    /// # Authorization Policy
+    /// - **Caller:** The `grantor`.
+    /// - **Policy:** `grantor.require_auth()` ensures the grantor authorizes the revocation.
     pub fn revoke(
         env: Env,
         grantor: Address,
