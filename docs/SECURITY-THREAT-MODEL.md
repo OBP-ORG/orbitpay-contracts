@@ -92,8 +92,7 @@ Threats are ranked on a scale of **Low / Medium / High / Critical** for both Lik
 |----|--------|---|---|---------|
 | T-03 | **Treasury signer threshold set to 1** | Low | High | If threshold is 1, a single compromised signer can drain the treasury. Mitigation: init enforces `threshold > 0 && threshold <= signers.len()`, but admin can lower to 1 post-init. |
 | T-04 | **Batch stream creation reuses contract address without token check** | Medium | High | `create_batch_streams` calls `token::Client::transfer` per stream with no per-stream balance check or insufficient-funds rollback. If one transfer fails, previous ones are already executed (Soroban atomicity covers this, but needs explicit verification). |
-| T-05 | **Payroll Stream double-transfer bug (known issue)** | Medium | High | `create_stream` has been reported to have a double transfer. AUDIT-CHECKLIST line 51 documents this as a known issue. Still unresolved. |
-| T-06 | **Vesting `claim` state update after transfer** | Medium | High | `claim` updates `schedule.claimed_amount += claimable` *before* the token transfer (lines 167-185). If the transfer fails, the claimed amount has already been incremented — but the Soroban atomic execution model means the whole tx reverts. Confirm with audit. |
+| T-05 | **Payroll Stream double-transfer bug (verify resolution)** | Medium | High | `create_stream` previously had a documented duplicate `token::Client::transfer` (AUDIT-CHECKLIST §6). Current code shows a single transfer in `create_stream` — the bug may already be resolved. Requires explicit verification and closure of the known-issue entry before audit. |
 | T-07 | **Emergency admin change bypasses timelock** | Low | High | `execute_emergency_admin_change` requires threshold signer approval but skips timelock. If signers are compromised, instant admin takeover is possible. This is a design trade-off documented in ADR-SECURITY.md. |
 | T-08 | **Treasury `deposit` inflow not verified on-chain** | High | High | The `deposit` function calls `token::Client::transfer(from, contract, amount)` but there is no check that the token address is trusted. A malicious token could be deposited with fake balances. Additionally, the contract has no `balance` state variable synced with token balances — deposits and withdrawals manipulate actual token custody directly. The balance is not tracked internally, so off-chain monitors lack a queryable position. |
 
@@ -102,9 +101,9 @@ Threats are ranked on a scale of **Low / Medium / High / Critical** for both Lik
 | ID | Threat | L | I | Summary |
 |----|--------|---|---|---------|
 | T-09 | **Governance snapshot bypass via admin mutation** | Low | Medium | Proposals use snapshots, but admin can add members with voting weight and create new proposals. Snapshot only protects in-flight proposals. |
-| T-10 | **Vesting `total_amount` vs `original_total_amount` divergence** | Medium | Medium | After revocation, `total_amount` is set to `vested` amount. If claimed + refunded amounts don't equal `original_total_amount`, token accounting breaks. Conservation invariant checked at line 267 but needs fuzz testing. |
+| T-10 | **Vesting `total_amount` vs `original_total_amount` divergence** | Medium | Medium | After revocation, `total_amount` is set to `vested` amount. If claimed + refunded amounts don't equal `original_total_amount`, token accounting breaks. Conservation invariant (I-BAL-3) checked in `revoke` but needs fuzz testing. |
 | T-11 | **Treasury pause can be bypassed by signer compromise** | Low | Medium | Pause requires threshold multisig. If attacker has threshold signers, they can unpause and drain. Pause is a mitigation, not a prevention. |
-| T-12 | **Instance TTL expiry could wipe config** | Medium | Medium | Treasury extends TTL on all entry points (bumps). Payroll Stream, Vesting, and Governance do NOT implement TTL extension (documented known issue: AUDIT-CHECKLIST line 54). If TTL expires, contracts become uninitialized. |
+| T-12 | **Instance TTL expiry could wipe config** | Medium | Medium | Treasury extends TTL on all entry points (bumps). Payroll Stream, Vesting, and Governance do NOT implement TTL extension (documented known issue: AUDIT-CHECKLIST §6). If TTL expires, contracts become uninitialized. |
 | T-13 | **Signer set version not checked on withdrawal execution** | Low | Medium | `create_withdrawal` stores `signer_set_version` at creation time. `execute_withdrawal` does not check that the current version matches. If signer set changed, approved withdrawal could be executed with a different set of signers. Unlike StellarSentinel, this contract uses a `WithdrawalStatus::Approved` model rather than signer-set-version invalidation. The invariant at I-ROT-4 states "pending withdrawals retain the signer_set_version at creation time so that original signers can still approve" — but this opens a window where a removed signer's approval still counts. |
 | T-14 | **Upgrade timelock observation window** | Low | Medium | Payroll/Vesting/Governance upgrades have a 24h timelock, but there is no notification system. A malicious upgrade proposal could go unobserved until execution. |
 | T-15 | **Custody correctness: batch withdrawal unfunded edge** | Medium | Medium | The issue references a "ties to the unfunded-batch bug". In `create_batch_streams`, tokens are transferred for each stream, but if a mid-batch transfer fails, the transaction reverts entirely due to Soroban atomicity. The concern is whether the batch proposal validation (Treasury) correctly rejects proposals exceeding available balance. |
@@ -117,6 +116,7 @@ Threats are ranked on a scale of **Low / Medium / High / Critical** for both Lik
 | T-17 | **Event topic collision** | Low | Low | Events use short symbols (e.g., `sa`, `sr`, `pp`, `pe`, `up`, `ue`). If two contracts use the same topic names, monitoring tools may conflate events. Each contract emits to its own contract address, but cross-contract monitors should filter by contract ID. |
 | T-18 | **Governance grace period mutable** | Low | Low | `grace_period` is used from proposal snapshot, but admin can change it globally. Only affects new proposals. |
 | T-19 | **Missing `initialized` flag check in some query functions** | Low | Low | Some query functions call `require_initialized`, others do not. Pre-initialization read queries return default values silently instead of errors. |
+| T-20 | **Vesting `claim` state update ordering (not exploitable on Soroban)** | Low | Low | `claim` updates `schedule.claimed_amount` before `token::Client::transfer`. On Soroban the entire invocation is atomic — if the transfer panics, all state mutations revert. No practical exploit exists. Noted for portability awareness only. |
 
 ---
 
@@ -142,8 +142,8 @@ Threats are ranked on a scale of **Low / Medium / High / Critical** for both Lik
 | No real-time admin key compromise detection | T-01, T-07 | High |
 | Governance↔Treasury trust boundary undefined | T-02 | Critical |
 | No per-stream balance check in batch creation | T-04 | High |
-| Known double-transfer bug (Payroll Stream) | T-05 | High |
-| No TTL extension on non-Treasury contracts | T-12 | Medium |
+| Known double-transfer bug (Payroll Stream) — verify resolution | T-05 | High |
+| No TTL extension on non-Treasury contracts | T-12 | Critical |
 | Signer set version not invalidated on execution | T-13 | Medium |
 | No on-chain balance reconciliation | T-08 | High |
 | No notification system for pending upgrades | T-14 | Medium |
@@ -199,14 +199,14 @@ The security audit should focus on:
 
 | Issue | Description | Threats |
 |-------|-------------|---------|
-| **FIX-DOUBLE-TRANSFER** | Resolve duplicate `token::Client::transfer` in Payroll Stream `create_stream` (lines 73 and 75 of the known double-transfer bug) | T-05 |
+| **FIX-DOUBLE-TRANSFER** | Verify and resolve the previously-documented double `token::Client::transfer` in Payroll Stream `create_stream` (see AUDIT-CHECKLIST §6). Code review suggests this may already be fixed; confirm and close. | T-05 |
 | **FIX-GOV-TREASURY-BOUNDARY** | Define and implement the Governance→Treasury trust boundary for budget execution | T-02 |
+| **FIX-TTL-NON-TREASURY** | Implement TTL extension (`extend_instance_ttl`) on Payroll Stream, Vesting, and Governance contracts. Instance storage expiry can render contracts permanently uninitialized. | T-12 |
 
 ### High (should fix before audit)
 
 | Issue | Description | Threats |
 |-------|-------------|---------|
-| **FIX-TTL-NON-TREASURY** | Implement TTL extension (`extend_instance_ttl`) on Payroll Stream, Vesting, and Governance contracts | T-12 |
 | **FIX-TOKEN-VALIDATION** | Add token address allowlist or validation to Treasury `deposit` | T-08 |
 | **FIX-SIGNER-VERSION** | Validate signer set version on withdrawal execution or invalidate old-version withdrawals | T-13 |
 | **FIX-BATCH-CHECKS** | Add aggregate balance checks and per-stream validation in `create_batch_streams` | T-04 |
@@ -218,9 +218,9 @@ The security audit should focus on:
 | **HARDEN-THRESHOLD-MINIMUM** | Add a minimum threshold constant (e.g., 2) for Treasury signers that cannot be lowered | T-03 |
 | **HARDEN-UPGRADE-NOTIFICATION** | Add event-based upgrade proposal notification for monitoring | T-14 |
 | **HARDEN-USDC-WHITELIST** | Implement token whitelist validation on vesting creation and stream creation | T-08 |
-| **HARDEN-FUZZ-VESTING** | Add property-based fuzz tests for vesting conservation invariants | T-10 |
+| **HARDEN-FUZZ-VESTING** | Add property-based fuzz tests for vesting conservation invariants (builds on existing fuzz work in #33 / PR #34) | T-10 |
 | **HARDEN-QUERY-INIT** | Standardize query functions to return `NotInitialized` error consistently | T-19 |
-| **HARDEN-FUNDING-VALIDATION** | Add `InsufficientBalance` checks before token transfers at Treasury deposit | T-08 |
+| **HARDEN-FUNDING-VALIDATION** | Add `InsufficientBalance` checks before `token::Client::transfer` calls in Treasury `deposit` to prevent silent undercollateralization | T-08 |
 
 ### Low (nice to have)
 
