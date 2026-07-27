@@ -1183,8 +1183,8 @@ fn test_progress_shows_original_total() {
     assert_eq!(progress.total_amount, 50_000);
 }
 
-/// Fuzzed matrix: varied (cliff, duration, total, revoke_time, prior_claims)
-/// Verifies invariant across many schedules with isolated token contracts.
+/// Fuzzed matrix: each (config, revoke_time) pair exercises a fresh schedule independently.
+/// Verifies conservation invariant: Σ(beneficiary_claims) + grantor_refund + contract_remainder == original_total
 #[test]
 fn test_conservation_invariant_fuzzed() {
     let (env, admin, client) = setup_env();
@@ -1201,52 +1201,57 @@ fn test_conservation_invariant_fuzzed() {
         (99_999, year * 3 / 4, 3 * year, 33_333_i128),
     ];
 
+    let revoke_time_offsets = [
+        0,                        // At start (vested=0)
+        1,                        // Mid-cliff
+        2,                        // Exactly at cliff
+        3,                        // Quarter through linear
+        4,                        // Half through linear
+        5,                        // At end
+        6,                        // Past end
+    ];
+
     for (total, cliff_duration, total_duration, cliff_amount) in configs {
-        let grantor = Address::generate(&env);
-        let beneficiary = Address::generate(&env);
+        for offset in revoke_time_offsets {
+            let grantor = Address::generate(&env);
+            let beneficiary = Address::generate(&env);
 
-        let token_admin = Address::generate(&env);
-        let token_contract = create_token_contract(&env, &token_admin);
-        let token_client = token::Client::new(&env, &token_contract.address);
-        token_contract.mint(&grantor, &total);
+            let token_admin = Address::generate(&env);
+            let token_contract = create_token_contract(&env, &token_admin);
+            let token_client = token::Client::new(&env, &token_contract.address);
+            token_contract.mint(&grantor, &total);
 
-        env.ledger().with_mut(|li| { li.timestamp = start_time; });
+            env.ledger().with_mut(|li| { li.timestamp = start_time; });
 
-        let sid = client.create_schedule(
-            &grantor, &beneficiary, &token_contract.address,
-            &total, &start_time, &cliff_duration, &cliff_amount,
-            &total_duration, &symbol_short!("test"), &true,
-        );
+            let sid = client.create_schedule(
+                &grantor, &beneficiary, &token_contract.address,
+                &total, &start_time, &cliff_duration, &cliff_amount,
+                &total_duration, &symbol_short!("test"), &true,
+            );
 
-        let revoke_times = [
-            start_time,
-            start_time + cliff_duration / 2,
-            start_time + cliff_duration,
-            start_time + cliff_duration + total_duration / 4,
-            start_time + cliff_duration + total_duration / 2,
-            start_time + total_duration,
-            start_time + total_duration + year,
-        ];
-
-        for &revoke_time in &revoke_times {
-            let schedule = client.get_schedule(&sid);
-            if schedule.status == VestingStatus::FullyClaimed || schedule.status == VestingStatus::Revoked {
-                continue;
-            }
+            let revoke_time = match offset {
+                0 => start_time,
+                1 => start_time + cliff_duration / 2,
+                2 => start_time + cliff_duration,
+                3 => start_time + cliff_duration + total_duration / 4,
+                4 => start_time + cliff_duration + total_duration / 2,
+                5 => start_time + total_duration,
+                _ => start_time + total_duration + year,
+            };
 
             env.ledger().with_mut(|li| { li.timestamp = revoke_time; });
             let _ = client.try_revoke(&grantor, &sid);
+
+            let grantor_balance = token_client.balance(&grantor);
+            let beneficiary_balance = token_client.balance(&beneficiary);
+            let contract_balance = token_client.balance(&client.address);
+            let total_accounted = grantor_balance + beneficiary_balance + contract_balance;
+
+            assert_eq!(
+                total_accounted, total,
+                "Conservation invariant failed at offset={}: grantor={} beneficiary={} contract={} expected={}",
+                offset, grantor_balance, beneficiary_balance, contract_balance, total
+            );
         }
-
-        let grantor_balance = token_client.balance(&grantor);
-        let beneficiary_balance = token_client.balance(&beneficiary);
-        let contract_balance = token_client.balance(&client.address);
-        let total_accounted = grantor_balance + beneficiary_balance + contract_balance;
-
-        assert_eq!(
-            total_accounted, total,
-            "Conservation invariant failed: grantor={} beneficiary={} contract={} expected={}",
-            grantor_balance, beneficiary_balance, contract_balance, total
-        );
     }
 }
