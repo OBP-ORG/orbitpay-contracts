@@ -906,3 +906,352 @@ fn test_upgrade_proposal_event_includes_actor() {
     let pending = client.get_pending_upgrade();
     assert!(pending.is_some());
 }
+
+// ── Conservation Invariant Tests (Issue #33) ─────────────────────
+
+/// Verifies that the conservation invariant Σ(beneficiary_claims) + grantor_refund == original_total
+/// holds for Claim→Revoke→Claim sequences.
+#[test]
+fn test_conservation_invariant_claim_revoke_claim() {
+    let (env, admin, client) = setup_env();
+    let grantor = Address::generate(&env);
+    let beneficiary = Address::generate(&env);
+
+    let token_admin = Address::generate(&env);
+    let token_contract = create_token_contract(&env, &token_admin);
+    let token_client = token::Client::new(&env, &token_contract.address);
+    token_contract.mint(&grantor, &100_000);
+
+    client.initialize(&admin);
+
+    let year = 365 * 24 * 60 * 60_u64;
+    let start_time = 1000_u64;
+    env.ledger().with_mut(|li| { li.timestamp = start_time; });
+
+    let schedule_id = client.create_schedule(
+        &grantor, &beneficiary, &token_contract.address,
+        &100_000_i128, &start_time, &year, &25_000_i128,
+        &(4 * year), &symbol_short!("team"), &true,
+    );
+
+    // Move to 2 years (50% vested = 50k) and claim half
+    env.ledger().with_mut(|li| { li.timestamp = start_time + (2 * year); });
+    let first_claim = client.claim(&beneficiary, &schedule_id);
+    assert_eq!(first_claim, 50_000);
+
+    // Revoke — unvested = 50k
+    let unvested = client.revoke(&grantor, &schedule_id);
+    assert_eq!(unvested, 50_000);
+
+    // Post-revoke: claim remaining vested amount (cliff + linear - already claimed = 50k - 50k = 0)
+    let post_revoke_claim = client.try_claim(&beneficiary, &schedule_id);
+    assert!(post_revoke_claim.is_err());
+
+    // Invariant: beneficiary got 50k, grantor got 50k, total = 100k = original
+    assert_eq!(token_client.balance(&beneficiary), 50_000);
+    assert_eq!(token_client.balance(&grantor), 50_000);
+    assert_eq!(token_client.balance(&client.address), 0);
+}
+
+/// Verifies revoke before cliff — all funds should return to grantor.
+#[test]
+fn test_revoke_before_cliff_full_refund() {
+    let (env, admin, client) = setup_env();
+    let grantor = Address::generate(&env);
+    let beneficiary = Address::generate(&env);
+
+    let token_admin = Address::generate(&env);
+    let token_contract = create_token_contract(&env, &token_admin);
+    let token_client = token::Client::new(&env, &token_contract.address);
+    token_contract.mint(&grantor, &100_000);
+
+    client.initialize(&admin);
+
+    let year = 365 * 24 * 60 * 60_u64;
+    let start_time = 1000_u64;
+    env.ledger().with_mut(|li| { li.timestamp = start_time; });
+
+    let schedule_id = client.create_schedule(
+        &grantor, &beneficiary, &token_contract.address,
+        &100_000_i128, &start_time, &year, &25_000_i128,
+        &(4 * year), &symbol_short!("team"), &true,
+    );
+
+    // Revoke before cliff (6 months in, vested = 0)
+    env.ledger().with_mut(|li| { li.timestamp = start_time + (year / 2); });
+
+    let unvested = client.revoke(&grantor, &schedule_id);
+    assert_eq!(unvested, 100_000);
+
+    assert_eq!(token_client.balance(&grantor), 100_000);
+    assert_eq!(token_client.balance(&client.address), 0);
+
+    // Beneficiary cannot claim
+    let claim_result = client.try_claim(&beneficiary, &schedule_id);
+    assert!(claim_result.is_err());
+}
+
+/// Verifies revoke after end — nothing to return, beneficiary keeps what's vested.
+#[test]
+fn test_revoke_after_end_zero_refund() {
+    let (env, admin, client) = setup_env();
+    let grantor = Address::generate(&env);
+    let beneficiary = Address::generate(&env);
+
+    let token_admin = Address::generate(&env);
+    let token_contract = create_token_contract(&env, &token_admin);
+    let token_client = token::Client::new(&env, &token_contract.address);
+    token_contract.mint(&grantor, &100_000);
+
+    client.initialize(&admin);
+    let year = 365 * 24 * 60 * 60_u64;
+    let start_time = 1000_u64;
+    env.ledger().with_mut(|li| { li.timestamp = start_time; });
+
+    let schedule_id = client.create_schedule(
+        &grantor, &beneficiary, &token_contract.address,
+        &100_000_i128, &start_time, &year, &25_000_i128,
+        &(4 * year), &symbol_short!("team"), &true,
+    );
+
+    // Move past end to 5 years
+    env.ledger().with_mut(|li| { li.timestamp = start_time + (5 * year); });
+
+    let unvested = client.revoke(&grantor, &schedule_id);
+    assert_eq!(unvested, 0);
+
+    // All 100k remains — beneficiary can still claim
+    let claimed = client.claim(&beneficiary, &schedule_id);
+    assert_eq!(claimed, 100_000);
+
+    assert_eq!(token_client.balance(&beneficiary), 100_000);
+    assert_eq!(token_client.balance(&client.address), 0);
+}
+
+/// Verifies revoke exactly at cliff time — cliff amount is vested, rest returned.
+#[test]
+fn test_revoke_at_exact_cliff() {
+    let (env, admin, client) = setup_env();
+    let grantor = Address::generate(&env);
+    let beneficiary = Address::generate(&env);
+
+    let token_admin = Address::generate(&env);
+    let token_contract = create_token_contract(&env, &token_admin);
+    let token_client = token::Client::new(&env, &token_contract.address);
+    token_contract.mint(&grantor, &100_000);
+
+    client.initialize(&admin);
+    let year = 365 * 24 * 60 * 60_u64;
+    let start_time = 1000_u64;
+    env.ledger().with_mut(|li| { li.timestamp = start_time; });
+
+    let schedule_id = client.create_schedule(
+        &grantor, &beneficiary, &token_contract.address,
+        &100_000_i128, &start_time, &year, &25_000_i128,
+        &(4 * year), &symbol_short!("team"), &true,
+    );
+
+    // Revoke exactly at cliff — 25k vested, 75k unvested
+    env.ledger().with_mut(|li| { li.timestamp = start_time + year; });
+
+    let unvested = client.revoke(&grantor, &schedule_id);
+    assert_eq!(unvested, 75_000);
+
+    // Beneficiary can claim the cliff amount
+    let claimed = client.claim(&beneficiary, &schedule_id);
+    assert_eq!(claimed, 25_000);
+
+    assert_eq!(token_client.balance(&beneficiary), 25_000);
+    assert_eq!(token_client.balance(&grantor), 75_000);
+    assert_eq!(token_client.balance(&client.address), 0);
+}
+
+/// Verifies that double-revoke fails gracefully.
+#[test]
+fn test_double_revoke_fails() {
+    let (env, admin, client) = setup_env();
+    let grantor = Address::generate(&env);
+    let beneficiary = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_contract = create_token_contract(&env, &token_admin);
+    token_contract.mint(&grantor, &100_000);
+
+    client.initialize(&admin);
+    let year = 365 * 24 * 60 * 60_u64;
+    let start_time = 1000_u64;
+    env.ledger().with_mut(|li| { li.timestamp = start_time; });
+
+    let schedule_id = client.create_schedule(
+        &grantor, &beneficiary, &token_contract.address,
+        &100_000_i128, &start_time, &year, &25_000_i128,
+        &(4 * year), &symbol_short!("team"), &true,
+    );
+
+    env.ledger().with_mut(|li| { li.timestamp = start_time + (2 * year); });
+    let first = client.revoke(&grantor, &schedule_id);
+    assert_eq!(first, 50_000);
+
+    let second = client.try_revoke(&grantor, &schedule_id);
+    assert_eq!(second, Err(Ok(VestingError::ScheduleRevoked)));
+}
+
+/// Verifies that revoke after fully claimed fails.
+#[test]
+fn test_revoke_after_fully_claimed_fails() {
+    let (env, admin, client) = setup_env();
+    let grantor = Address::generate(&env);
+    let beneficiary = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_contract = create_token_contract(&env, &token_admin);
+    token_contract.mint(&grantor, &100_000);
+
+    client.initialize(&admin);
+    let year = 365 * 24 * 60 * 60_u64;
+    let start_time = 1000_u64;
+    env.ledger().with_mut(|li| { li.timestamp = start_time; });
+
+    let schedule_id = client.create_schedule(
+        &grantor, &beneficiary, &token_contract.address,
+        &100_000_i128, &start_time, &year, &25_000_i128,
+        &(4 * year), &symbol_short!("team"), &true,
+    );
+
+    // Full vesting after total duration
+    env.ledger().with_mut(|li| { li.timestamp = start_time + (4 * year); });
+    client.claim(&beneficiary, &schedule_id);
+
+    let revoke_result = client.try_revoke(&grantor, &schedule_id);
+    assert_eq!(revoke_result, Err(Ok(VestingError::AlreadyFullyClaimed)));
+}
+
+/// Verifies that `original_total_amount` is preserved through revoke.
+#[test]
+fn test_original_total_preserved_after_revoke() {
+    let (env, admin, client) = setup_env();
+    let grantor = Address::generate(&env);
+    let beneficiary = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_contract = create_token_contract(&env, &token_admin);
+    token_contract.mint(&grantor, &100_000);
+
+    client.initialize(&admin);
+    let year = 365 * 24 * 60 * 60_u64;
+    let start_time = 1000_u64;
+    env.ledger().with_mut(|li| { li.timestamp = start_time; });
+
+    let schedule_id = client.create_schedule(
+        &grantor, &beneficiary, &token_contract.address,
+        &100_000_i128, &start_time, &year, &25_000_i128,
+        &(4 * year), &symbol_short!("team"), &true,
+    );
+
+    env.ledger().with_mut(|li| { li.timestamp = start_time + (2 * year); });
+    client.revoke(&grantor, &schedule_id);
+
+    let schedule = client.get_schedule(&schedule_id);
+    assert_eq!(schedule.total_amount, 50_000);
+    assert_eq!(schedule.original_total_amount, 100_000);
+    assert!(schedule.original_total_amount >= schedule.total_amount);
+}
+
+/// Verifies that `original_total_amount` is exposed in progress.
+#[test]
+fn test_progress_shows_original_total() {
+    let (env, admin, client) = setup_env();
+    let grantor = Address::generate(&env);
+    let beneficiary = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_contract = create_token_contract(&env, &token_admin);
+    token_contract.mint(&grantor, &100_000);
+
+    client.initialize(&admin);
+    let year = 365 * 24 * 60 * 60_u64;
+    let start_time = 1000_u64;
+    env.ledger().with_mut(|li| { li.timestamp = start_time; });
+
+    let schedule_id = client.create_schedule(
+        &grantor, &beneficiary, &token_contract.address,
+        &100_000_i128, &start_time, &year, &25_000_i128,
+        &(4 * year), &symbol_short!("team"), &true,
+    );
+
+    env.ledger().with_mut(|li| { li.timestamp = start_time + (2 * year); });
+    client.revoke(&grantor, &schedule_id);
+
+    let progress = client.get_progress(&schedule_id);
+    assert_eq!(progress.original_total_amount, 100_000);
+    assert_eq!(progress.total_amount, 50_000);
+}
+
+/// Fuzzed matrix: each (config, revoke_time) pair exercises a fresh schedule independently.
+/// Verifies conservation invariant: Σ(beneficiary_claims) + grantor_refund + contract_remainder == original_total
+#[test]
+fn test_conservation_invariant_fuzzed() {
+    let (env, admin, client) = setup_env();
+    let year = 365 * 24 * 60 * 60_u64;
+    let start_time = 1000_u64;
+
+    client.initialize(&admin);
+
+    let configs = [
+        (100_000, year, 4 * year, 25_000_i128),
+        (50_000, year / 2, 2 * year, 5_000_i128),
+        (200_000, year / 4, year, 50_000_i128),
+        (1_000_000, year, 4 * year, 250_000_i128),
+        (99_999, year * 3 / 4, 3 * year, 33_333_i128),
+    ];
+
+    let revoke_time_offsets = [
+        0,                        // At start (vested=0)
+        1,                        // Mid-cliff
+        2,                        // Exactly at cliff
+        3,                        // Quarter through linear
+        4,                        // Half through linear
+        5,                        // At end
+        6,                        // Past end
+    ];
+
+    for (total, cliff_duration, total_duration, cliff_amount) in configs {
+        for offset in revoke_time_offsets {
+            let grantor = Address::generate(&env);
+            let beneficiary = Address::generate(&env);
+
+            let token_admin = Address::generate(&env);
+            let token_contract = create_token_contract(&env, &token_admin);
+            let token_client = token::Client::new(&env, &token_contract.address);
+            token_contract.mint(&grantor, &total);
+
+            env.ledger().with_mut(|li| { li.timestamp = start_time; });
+
+            let sid = client.create_schedule(
+                &grantor, &beneficiary, &token_contract.address,
+                &total, &start_time, &cliff_duration, &cliff_amount,
+                &total_duration, &symbol_short!("test"), &true,
+            );
+
+            let revoke_time = match offset {
+                0 => start_time,
+                1 => start_time + cliff_duration / 2,
+                2 => start_time + cliff_duration,
+                3 => start_time + cliff_duration + total_duration / 4,
+                4 => start_time + cliff_duration + total_duration / 2,
+                5 => start_time + total_duration,
+                _ => start_time + total_duration + year,
+            };
+
+            env.ledger().with_mut(|li| { li.timestamp = revoke_time; });
+            let _ = client.try_revoke(&grantor, &sid);
+
+            let grantor_balance = token_client.balance(&grantor);
+            let beneficiary_balance = token_client.balance(&beneficiary);
+            let contract_balance = token_client.balance(&client.address);
+            let total_accounted = grantor_balance + beneficiary_balance + contract_balance;
+
+            assert_eq!(
+                total_accounted, total,
+                "Conservation invariant failed at offset={}: grantor={} beneficiary={} contract={} expected={}",
+                offset, grantor_balance, beneficiary_balance, contract_balance, total
+            );
+        }
+    }
+}

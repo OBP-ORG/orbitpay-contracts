@@ -861,6 +861,17 @@
                     },
                     {
                       "key": {
+                        "symbol": "original_total_amount"
+                      },
+                      "val": {
+                        "i128": {
+                          "hi": 0,
+                          "lo": 100000
+                        }
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "revocable"
                       },
                       "val": {
@@ -1030,6 +1041,17 @@
                     },
                     {
                       "key": {
+                        "symbol": "original_total_amount"
+                      },
+                      "val": {
+                        "i128": {
+                          "hi": 0,
+                          "lo": 50000
+                        }
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "revocable"
                       },
                       "val": {
@@ -1195,6 +1217,17 @@
                       },
                       "val": {
                         "symbol": "seed"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "original_total_amount"
+                      },
+                      "val": {
+                        "i128": {
+                          "hi": 0,
+                          "lo": 150000
+                        }
                       }
                     },
                     {

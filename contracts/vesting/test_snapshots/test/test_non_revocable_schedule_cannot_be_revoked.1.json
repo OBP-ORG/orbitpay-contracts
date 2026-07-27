@@ -417,6 +417,17 @@
                     },
                     {
                       "key": {
+                        "symbol": "original_total_amount"
+                      },
+                      "val": {
+                        "i128": {
+                          "hi": 0,
+                          "lo": 100000
+                        }
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "revocable"
                       },
                       "val": {

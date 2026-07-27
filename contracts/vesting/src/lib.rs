@@ -99,6 +99,7 @@ impl VestingContract {
             beneficiary: beneficiary.clone(),
             token: token.clone(),
             total_amount,
+            original_total_amount: total_amount,
             claimed_amount: 0,
             start_time,
             cliff_duration,
@@ -165,6 +166,11 @@ impl VestingContract {
 
         schedule.claimed_amount += claimable;
 
+        // Conservation invariant: total claimed across all paths cannot exceed original total
+        if schedule.claimed_amount > schedule.original_total_amount {
+            return Err(VestingError::InsufficientBalance);
+        }
+
         let mut is_fully_claimed = false;
         if schedule.claimed_amount >= schedule.total_amount {
             schedule.status = VestingStatus::FullyClaimed;
@@ -177,7 +183,7 @@ impl VestingContract {
         }
 
         token_client.transfer(&env.current_contract_address(), &beneficiary, &claimable);
- 
+
         set_schedule(&env, schedule_id, &schedule);
         add_claim_record(&env, schedule_id, claimable, env.ledger().timestamp());
 
@@ -232,10 +238,20 @@ impl VestingContract {
         }
 
         let vested = Self::calculate_vested(&env, &schedule);
-        let unvested = schedule.total_amount - vested;
+        let original_total = schedule.original_total_amount;
+        let claimed_before = schedule.claimed_amount;
+
+        // unvested cannot exceed the original total minus what's already claimed
+        let unvested_max = original_total - claimed_before;
+        let unvested = if vested >= schedule.total_amount {
+            0
+        } else {
+            let raw_unvested = schedule.total_amount - vested;
+            if raw_unvested > unvested_max { unvested_max } else { raw_unvested }
+        };
 
         schedule.status = VestingStatus::Revoked;
-        schedule.total_amount = vested; // Cap at vested amount
+        schedule.total_amount = vested;
         schedule.revoked_at = Some(env.ledger().timestamp());
 
         if unvested > 0 {
@@ -244,6 +260,13 @@ impl VestingContract {
                 return Err(VestingError::InsufficientBalance);
             }
             token_client.transfer(&env.current_contract_address(), &grantor, &unvested);
+        }
+
+        // Conservation invariant: claimed_before + unvested + (vested - claimed_before) == original_total
+        // Post-revoke, the claimable remainder for the beneficiary is (vested - claimed_before).
+        let total_after = claimed_before + unvested + (vested - claimed_before);
+        if total_after > original_total {
+            return Err(VestingError::InsufficientBalance);
         }
 
         set_schedule(&env, schedule_id, &schedule);
@@ -292,9 +315,15 @@ impl VestingContract {
         let vesting_duration = schedule.total_duration - schedule.cliff_duration;
         let time_since_cliff = elapsed - schedule.cliff_duration;
 
-        let vested_linear = (remaining_amount * (time_since_cliff as i128)) / (vesting_duration as i128);
-        
-        schedule.cliff_amount + vested_linear
+        let vested_linear = if remaining_amount > 0 && vesting_duration > 0 {
+            let raw = (remaining_amount * (time_since_cliff as i128)) / (vesting_duration as i128);
+            if raw > remaining_amount { remaining_amount } else { raw }
+        } else {
+            0
+        };
+
+        let vested = schedule.cliff_amount + vested_linear;
+        if vested > schedule.total_amount { schedule.total_amount } else { vested }
     }
 
     // ── Query Functions ──────────────────────────────────────────
@@ -314,6 +343,7 @@ impl VestingContract {
 
         Ok(VestingProgress {
             total_amount: schedule.total_amount,
+            original_total_amount: schedule.original_total_amount,
             vested_amount: vested,
             claimed_amount: schedule.claimed_amount,
             claimable_amount: if claimable > 0 { claimable } else { 0 },

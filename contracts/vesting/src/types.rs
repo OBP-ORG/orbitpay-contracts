@@ -31,6 +31,8 @@ pub struct VestingSchedule {
     pub token: Address,
     /// Total amount of tokens to vest.
     pub total_amount: i128,
+    /// Original total amount before any mutation (preserved for conservation invariant).
+    pub original_total_amount: i128,
     /// Amount already claimed by the beneficiary.
     pub claimed_amount: i128,
     /// Unix timestamp when vesting begins.
@@ -56,6 +58,7 @@ pub struct VestingSchedule {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VestingProgress {
     pub total_amount: i128,
+    pub original_total_amount: i128,
     pub vested_amount: i128,
     pub claimed_amount: i128,
     pub claimable_amount: i128,
