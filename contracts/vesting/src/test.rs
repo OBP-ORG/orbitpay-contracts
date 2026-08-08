@@ -1255,3 +1255,289 @@ fn test_conservation_invariant_fuzzed() {
         }
     }
 }
+
+// ── Property-Based Invariant Tests (Issue #28) ─────────────────────
+//
+// Deterministic, seeded property tests. A splitmix64-style PRNG drives
+// bounded randomized configurations and event sequences, giving
+// reproducible coverage of:
+//   1. Conservation: grantor + beneficiary + contract balances == original total
+//      for arbitrary create -> claim* -> {revoke, more claims} orderings.
+//   2. Cliff invariant: vested == 0 before cliff; vested >= cliff_amount at cliff;
+//      vested == total_amount at/after end.
+//   3. Monotonic vested: `progress.vested_amount` is non-decreasing over time
+//      and never exceeds `total_amount`.
+//   4. Terminal state: post-revoke, only up to the vested-at-revoke amount can
+//      be claimed; further claims fail; balances stay conserved.
+
+fn next_rand(state: &mut u64) -> u64 {
+    *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut z = *state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+fn rand_range_u64(state: &mut u64, lo: u64, hi_inclusive: u64) -> u64 {
+    lo + next_rand(state) % (hi_inclusive - lo + 1)
+}
+
+fn rand_range_i128(state: &mut u64, lo: i128, hi_inclusive: i128) -> i128 {
+    lo + (next_rand(state) as i128) % (hi_inclusive - lo + 1)
+}
+
+/// Property: conservation holds for randomized create -> claim* -> {revoke, claim*} sequences.
+#[test]
+fn test_property_vesting_conservation_random_sequences() {
+    let seeds: [u64; 8] = [
+        0xDEAD_BEEF, 0x00C0_FFEE, 0x1337_1337, 0xABCD_1234,
+        0x4242_4242, 0x9999_8888, 0x0000_FFFF, 0xBADD_CAFE,
+    ];
+
+    for seed in seeds {
+        let mut rng = seed;
+        let (env, admin, client) = setup_env();
+        let grantor = Address::generate(&env);
+        let beneficiary = Address::generate(&env);
+
+        let token_admin = Address::generate(&env);
+        let token_contract = create_token_contract(&env, &token_admin);
+        let token_client = token::Client::new(&env, &token_contract.address);
+
+        let total_amount: i128 = rand_range_i128(&mut rng, 10_000, 1_000_000);
+        let total_duration: u64 = rand_range_u64(&mut rng, 400, 10_000);
+        let cliff_duration: u64 = rand_range_u64(&mut rng, 1, total_duration - 1);
+        let cliff_amount: i128 = rand_range_i128(&mut rng, 0, total_amount / 2);
+        let start_time: u64 = 1_000;
+
+        token_contract.mint(&grantor, &total_amount);
+        client.initialize(&admin);
+
+        env.ledger().with_mut(|li| { li.timestamp = start_time; });
+        let sid = client.create_schedule(
+            &grantor, &beneficiary, &token_contract.address,
+            &total_amount, &start_time, &cliff_duration, &cliff_amount,
+            &total_duration, &symbol_short!("prop"), &true,
+        );
+
+        let n_claims = rand_range_u64(&mut rng, 0, 3);
+        let mut last_t = start_time;
+        for _ in 0..n_claims {
+            let step = rand_range_u64(&mut rng, 1, total_duration / 2 + 1);
+            last_t += step;
+            env.ledger().with_mut(|li| { li.timestamp = last_t; });
+            let _ = client.try_claim(&beneficiary, &sid);
+        }
+
+        // Optional revoke path
+        if (next_rand(&mut rng) & 1) == 1 {
+            let step = rand_range_u64(&mut rng, 0, total_duration / 2 + 1);
+            env.ledger().with_mut(|li| { li.timestamp = last_t + step; });
+            let _ = client.try_revoke(&grantor, &sid);
+        }
+
+        // Post-event tail: advance well past end and try one more claim
+        env.ledger().with_mut(|li| { li.timestamp = start_time + total_duration + 1; });
+        let _ = client.try_claim(&beneficiary, &sid);
+
+        let g = token_client.balance(&grantor);
+        let b = token_client.balance(&beneficiary);
+        let c = token_client.balance(&client.address);
+        assert_eq!(
+            g + b + c, total_amount,
+            "conservation failed for seed=0x{:X}: grantor={} beneficiary={} contract={} expected={}",
+            seed, g, b, c, total_amount
+        );
+
+        let schedule = client.get_schedule(&sid);
+        assert!(schedule.claimed_amount >= 0);
+        assert!(schedule.claimed_amount <= schedule.original_total_amount);
+    }
+}
+
+/// Property: cliff boundary — vested == 0 before cliff, vested >= cliff_amount at cliff,
+/// vested == total_amount at/after `total_duration`.
+#[test]
+fn test_property_vesting_cliff_boundary() {
+    let seeds: [u64; 6] = [
+        0x0000_C11F, 0x0000_1F1E, 0x0000_DEAD, 0x0000_BEEF,
+        0x0000_A5A5, 0x0000_5A5A,
+    ];
+
+    for seed in seeds {
+        let mut rng = seed;
+        let (env, admin, client) = setup_env();
+        let grantor = Address::generate(&env);
+        let beneficiary = Address::generate(&env);
+        let token_admin = Address::generate(&env);
+        let token_contract = create_token_contract(&env, &token_admin);
+        token_contract.mint(&grantor, &1_000_000);
+        client.initialize(&admin);
+
+        let total_amount: i128 = 1_000_000;
+        let start_time: u64 = 1_000;
+        let cliff_duration: u64 = rand_range_u64(&mut rng, 100, 1_000);
+        let total_duration: u64 =
+            cliff_duration + rand_range_u64(&mut rng, 100, 10_000);
+        let cliff_amount: i128 = rand_range_i128(&mut rng, 0, total_amount / 2);
+
+        env.ledger().with_mut(|li| { li.timestamp = start_time; });
+        let sid = client.create_schedule(
+            &grantor, &beneficiary, &token_contract.address,
+            &total_amount, &start_time, &cliff_duration, &cliff_amount,
+            &total_duration, &symbol_short!("prop"), &true,
+        );
+
+        // Just before cliff — nothing has vested
+        env.ledger().with_mut(|li| { li.timestamp = start_time + cliff_duration - 1; });
+        let progress = client.get_progress(&sid);
+        assert_eq!(
+            progress.vested_amount, 0,
+            "seed=0x{:X}: non-zero vested before cliff", seed
+        );
+        assert_eq!(progress.claimable_amount, 0);
+
+        // At cliff — vested is at least cliff_amount and at most total_amount
+        env.ledger().with_mut(|li| { li.timestamp = start_time + cliff_duration; });
+        let progress = client.get_progress(&sid);
+        assert!(
+            progress.vested_amount >= cliff_amount,
+            "seed=0x{:X}: vested {} below cliff {} at cliff time",
+            seed, progress.vested_amount, cliff_amount
+        );
+        assert!(progress.vested_amount <= total_amount);
+
+        // At/after end — fully vested
+        env.ledger().with_mut(|li| { li.timestamp = start_time + total_duration; });
+        let progress = client.get_progress(&sid);
+        assert_eq!(
+            progress.vested_amount, total_amount,
+            "seed=0x{:X}: vested {} != total {} at end", seed, progress.vested_amount, total_amount
+        );
+
+        env.ledger().with_mut(|li| { li.timestamp = start_time + total_duration + 12_345; });
+        let progress = client.get_progress(&sid);
+        assert_eq!(progress.vested_amount, total_amount);
+    }
+}
+
+/// Property: `progress.vested_amount` is non-decreasing over time and bounded by `total_amount`.
+#[test]
+fn test_property_vesting_monotonic_vested() {
+    let seeds: [u64; 4] = [0x0000_1111, 0x0000_2222, 0x0000_3333, 0x0000_4444];
+
+    for seed in seeds {
+        let mut rng = seed;
+        let (env, admin, client) = setup_env();
+        let grantor = Address::generate(&env);
+        let beneficiary = Address::generate(&env);
+        let token_admin = Address::generate(&env);
+        let token_contract = create_token_contract(&env, &token_admin);
+        token_contract.mint(&grantor, &1_000_000);
+        client.initialize(&admin);
+
+        let total_amount: i128 = 1_000_000;
+        let start_time: u64 = 1_000;
+        let cliff_duration: u64 = rand_range_u64(&mut rng, 100, 1_000);
+        let total_duration: u64 =
+            cliff_duration + rand_range_u64(&mut rng, 200, 10_000);
+        let cliff_amount: i128 = rand_range_i128(&mut rng, 0, total_amount / 4);
+
+        env.ledger().with_mut(|li| { li.timestamp = start_time; });
+        let sid = client.create_schedule(
+            &grantor, &beneficiary, &token_contract.address,
+            &total_amount, &start_time, &cliff_duration, &cliff_amount,
+            &total_duration, &symbol_short!("prop"), &true,
+        );
+
+        let n_samples: u64 = 12;
+        let step = total_duration / n_samples;
+        let mut prev: i128 = 0;
+        for i in 0..=n_samples {
+            let t = start_time + i * step;
+            env.ledger().with_mut(|li| { li.timestamp = t; });
+            let v = client.get_progress(&sid).vested_amount;
+            assert!(
+                v >= prev,
+                "seed=0x{:X}: vested decreased at t={} (prev={}, now={})",
+                seed, t, prev, v
+            );
+            assert!(
+                v <= total_amount,
+                "seed=0x{:X}: vested {} exceeds total {}", seed, v, total_amount
+            );
+            prev = v;
+        }
+
+        env.ledger().with_mut(|li| { li.timestamp = start_time + total_duration + 1; });
+        assert_eq!(
+            client.get_progress(&sid).vested_amount, total_amount,
+            "seed=0x{:X}: vested after end != total", seed
+        );
+    }
+}
+
+/// Property: after revoke, further claims cannot pay out more than vested-at-revoke;
+/// once that is drained, additional claims fail and balances stay conserved.
+#[test]
+fn test_property_vesting_terminal_state_after_revoke() {
+    let seeds: [u64; 4] = [0x0000_AAAA, 0x0000_BBBB, 0x0000_CCCC, 0x0000_DDDD];
+
+    for seed in seeds {
+        let mut rng = seed;
+        let (env, admin, client) = setup_env();
+        let grantor = Address::generate(&env);
+        let beneficiary = Address::generate(&env);
+        let token_admin = Address::generate(&env);
+        let token_contract = create_token_contract(&env, &token_admin);
+        let token_client = token::Client::new(&env, &token_contract.address);
+        token_contract.mint(&grantor, &1_000_000);
+        client.initialize(&admin);
+
+        let total_amount: i128 = 1_000_000;
+        let start_time: u64 = 1_000;
+        let cliff_duration: u64 = rand_range_u64(&mut rng, 100, 1_000);
+        let total_duration: u64 =
+            cliff_duration + rand_range_u64(&mut rng, 400, 10_000);
+        let cliff_amount: i128 = rand_range_i128(&mut rng, 0, total_amount / 4);
+
+        env.ledger().with_mut(|li| { li.timestamp = start_time; });
+        let sid = client.create_schedule(
+            &grantor, &beneficiary, &token_contract.address,
+            &total_amount, &start_time, &cliff_duration, &cliff_amount,
+            &total_duration, &symbol_short!("prop"), &true,
+        );
+
+        // Revoke somewhere in the vesting window
+        let revoke_offset = rand_range_u64(&mut rng, cliff_duration, total_duration - 1);
+        env.ledger().with_mut(|li| { li.timestamp = start_time + revoke_offset; });
+        let vested_at_revoke = client.get_progress(&sid).vested_amount;
+        client.revoke(&grantor, &sid);
+
+        // Drain claimable, then verify further claims fail
+        let _ = client.try_claim(&beneficiary, &sid);
+        assert!(
+            client.try_claim(&beneficiary, &sid).is_err(),
+            "seed=0x{:X}: claim succeeded after fully draining post-revoke", seed
+        );
+
+        // Beneficiary can never receive more than what was vested at revoke time
+        assert!(
+            token_client.balance(&beneficiary) <= vested_at_revoke,
+            "seed=0x{:X}: beneficiary got {} > vested_at_revoke {}",
+            seed, token_client.balance(&beneficiary), vested_at_revoke
+        );
+
+        // Conservation still holds
+        let g = token_client.balance(&grantor);
+        let b = token_client.balance(&beneficiary);
+        let c = token_client.balance(&client.address);
+        assert_eq!(g + b + c, total_amount, "seed=0x{:X}: conservation broken after revoke", seed);
+
+        // Double revoke fails
+        assert!(
+            client.try_revoke(&grantor, &sid).is_err(),
+            "seed=0x{:X}: double revoke succeeded", seed
+        );
+    }
+}

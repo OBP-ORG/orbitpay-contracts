@@ -692,3 +692,211 @@ fn test_claim_multiple_times_progression() {
     let stream = client.get_stream(&stream_id);
     assert_eq!(stream.status, StreamStatus::Completed);
 }
+
+// ── Property-Based Invariant Tests (Issue #28) ─────────────────────
+//
+// Deterministic, seeded property tests. A splitmix64-style PRNG drives
+// bounded randomized configurations and event sequences, giving
+// reproducible coverage of:
+//   1. Conservation: sender + recipient + contract balances == total_amount
+//      at every observable point for arbitrary create -> claim* -> cancel orderings.
+//   2. Monotonic accrual: `get_claimable` is non-decreasing over time when no
+//      claim occurs between samples, and never exceeds `total_amount`.
+//   3. Terminal state: once a stream is Cancelled, no further payout is possible
+//      and balances cannot change.
+
+fn next_rand(state: &mut u64) -> u64 {
+    *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut z = *state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+fn rand_range_u64(state: &mut u64, lo: u64, hi_inclusive: u64) -> u64 {
+    lo + next_rand(state) % (hi_inclusive - lo + 1)
+}
+
+fn rand_range_i128(state: &mut u64, lo: i128, hi_inclusive: i128) -> i128 {
+    lo + (next_rand(state) as i128) % (hi_inclusive - lo + 1)
+}
+
+/// Property: conservation holds for randomized create -> claim* -> {cancel | final claim}.
+#[test]
+fn test_property_conservation_across_random_sequences() {
+    let seeds: [u64; 8] = [
+        0xDEAD_BEEF, 0x00C0_FFEE, 0x1337_1337, 0xABCD_1234,
+        0x4242_4242, 0x9999_8888, 0x0000_FFFF, 0xBADD_CAFE,
+    ];
+
+    for seed in seeds {
+        let mut rng = seed;
+        let (env, admin, client) = setup_env();
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+
+        let token_admin = Address::generate(&env);
+        let token_contract = create_token_contract(&env, &token_admin);
+        let token = token_contract.address.clone();
+        let token_client = create_token_client(&env, &token);
+
+        let total_amount: i128 = rand_range_i128(&mut rng, 1_000, 1_000_000);
+        let duration: u64 = rand_range_u64(&mut rng, 200, 10_000);
+        let start_time: u64 = 1_000;
+        let end_time = start_time + duration;
+
+        token_contract.mint(&sender, &total_amount);
+        client.initialize(&admin);
+
+        env.ledger().with_mut(|li| { li.timestamp = start_time; });
+        let stream_id = client.create_stream(
+            &sender, &recipient, &token, &total_amount, &start_time, &end_time,
+        );
+
+        let n_claims = rand_range_u64(&mut rng, 0, 4);
+        let mut last_t = start_time;
+        for _ in 0..n_claims {
+            let step = rand_range_u64(&mut rng, 1, duration / 2 + 1);
+            let next_t = last_t + step;
+            let clamped = if next_t > end_time { end_time } else { next_t };
+            env.ledger().with_mut(|li| { li.timestamp = clamped; });
+            let _ = client.try_claim(&recipient, &stream_id);
+            last_t = clamped;
+        }
+
+        if (next_rand(&mut rng) & 1) == 1 {
+            let step = rand_range_u64(&mut rng, 0, duration / 2 + 1);
+            env.ledger().with_mut(|li| { li.timestamp = last_t + step; });
+            let _ = client.try_cancel_stream(&sender, &stream_id);
+        } else {
+            env.ledger().with_mut(|li| { li.timestamp = end_time + 1; });
+            let _ = client.try_claim(&recipient, &stream_id);
+        }
+
+        let sender_bal = token_client.balance(&sender);
+        let recipient_bal = token_client.balance(&recipient);
+        let contract_bal = token_client.balance(&client.address);
+        assert_eq!(
+            sender_bal + recipient_bal + contract_bal, total_amount,
+            "conservation failed for seed=0x{:X}: sender={} recipient={} contract={} expected={}",
+            seed, sender_bal, recipient_bal, contract_bal, total_amount
+        );
+
+        let stream = client.get_stream(&stream_id);
+        assert!(stream.claimed_amount >= 0);
+        assert!(stream.claimed_amount <= stream.total_amount);
+    }
+}
+
+/// Property: `get_claimable` is non-decreasing over time (without intermediate claims)
+/// and never exceeds `total_amount`; equals `total_amount` after `end_time`.
+#[test]
+fn test_property_monotonic_claimable_and_bounded() {
+    let seeds: [u64; 4] = [0x0000_A5A5, 0x0000_5A5A, 0x0000_C001, 0x0000_F00D];
+
+    for seed in seeds {
+        let mut rng = seed;
+        let (env, admin, client) = setup_env();
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+
+        let token_admin = Address::generate(&env);
+        let token_contract = create_token_contract(&env, &token_admin);
+        let token = token_contract.address.clone();
+
+        let total_amount: i128 = rand_range_i128(&mut rng, 1_000, 1_000_000);
+        let duration: u64 = rand_range_u64(&mut rng, 200, 10_000);
+        let start_time: u64 = 1_000;
+        let end_time = start_time + duration;
+
+        token_contract.mint(&sender, &total_amount);
+        client.initialize(&admin);
+
+        env.ledger().with_mut(|li| { li.timestamp = start_time; });
+        let stream_id = client.create_stream(
+            &sender, &recipient, &token, &total_amount, &start_time, &end_time,
+        );
+
+        let n_samples: u64 = 10;
+        let step = duration / n_samples;
+        let mut prev_claimable: i128 = 0;
+        for i in 0..=n_samples {
+            let t = start_time + i * step;
+            env.ledger().with_mut(|li| { li.timestamp = t; });
+            let c = client.get_claimable(&stream_id);
+            assert!(
+                c >= prev_claimable,
+                "seed=0x{:X}: claimable decreased at t={} (prev={}, now={})",
+                seed, t, prev_claimable, c
+            );
+            assert!(
+                c <= total_amount,
+                "seed=0x{:X}: claimable {} exceeds total_amount {}",
+                seed, c, total_amount
+            );
+            prev_claimable = c;
+        }
+
+        env.ledger().with_mut(|li| { li.timestamp = end_time + 100; });
+        assert_eq!(
+            client.get_claimable(&stream_id), total_amount,
+            "seed=0x{:X}: claimable after end != total_amount", seed
+        );
+    }
+}
+
+/// Property: after cancel, no further payout is possible and balances are frozen.
+#[test]
+fn test_property_terminal_state_no_payout_after_cancel() {
+    let seeds: [u64; 4] = [0x0000_1111, 0x0000_2222, 0x0000_3333, 0x0000_4444];
+
+    for seed in seeds {
+        let mut rng = seed;
+        let (env, admin, client) = setup_env();
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+
+        let token_admin = Address::generate(&env);
+        let token_contract = create_token_contract(&env, &token_admin);
+        let token = token_contract.address.clone();
+        let token_client = create_token_client(&env, &token);
+
+        let total_amount: i128 = rand_range_i128(&mut rng, 1_000, 100_000);
+        let duration: u64 = rand_range_u64(&mut rng, 200, 5_000);
+        let start_time: u64 = 1_000;
+        let end_time = start_time + duration;
+
+        token_contract.mint(&sender, &total_amount);
+        client.initialize(&admin);
+
+        env.ledger().with_mut(|li| { li.timestamp = start_time; });
+        let stream_id = client.create_stream(
+            &sender, &recipient, &token, &total_amount, &start_time, &end_time,
+        );
+
+        let cancel_offset = rand_range_u64(&mut rng, 1, duration - 1);
+        env.ledger().with_mut(|li| { li.timestamp = start_time + cancel_offset; });
+        client.cancel_stream(&sender, &stream_id);
+
+        let sender_bal_at_cancel = token_client.balance(&sender);
+        let recipient_bal_at_cancel = token_client.balance(&recipient);
+        let contract_bal_at_cancel = token_client.balance(&client.address);
+
+        env.ledger().with_mut(|li| { li.timestamp = end_time + 10; });
+        assert!(
+            client.try_claim(&recipient, &stream_id).is_err(),
+            "seed=0x{:X}: claim after cancel unexpectedly succeeded", seed
+        );
+        assert!(
+            client.try_cancel_stream(&sender, &stream_id).is_err(),
+            "seed=0x{:X}: double cancel unexpectedly succeeded", seed
+        );
+
+        assert_eq!(token_client.balance(&sender), sender_bal_at_cancel);
+        assert_eq!(token_client.balance(&recipient), recipient_bal_at_cancel);
+        assert_eq!(token_client.balance(&client.address), contract_bal_at_cancel);
+
+        let stream = client.get_stream(&stream_id);
+        assert_eq!(stream.status, StreamStatus::Cancelled);
+    }
+}
