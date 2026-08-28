@@ -1,5 +1,7 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, symbol_short, token, Address, BytesN, Env, Symbol, Vec};
+use soroban_sdk::{
+    contract, contractimpl, symbol_short, token, Address, BytesN, Env, Map, Symbol, Vec,
+};
 
 mod errors;
 mod storage;
@@ -7,12 +9,11 @@ mod types;
 
 use errors::StreamError;
 use storage::{
-    add_recipient_stream, add_sender_stream, get_admin, get_recipient_streams, get_sender_streams,
-    get_stream, get_stream_count, has_admin, set_admin, set_stream, set_stream_count,
-    get_pending_upgrade, set_pending_upgrade, clear_pending_upgrade, MIN_UPGRADE_DELAY,
-    extend_instance_ttl,
+    add_recipient_stream, add_sender_stream, clear_pending_upgrade, extend_instance_ttl, get_admin,
+    get_pending_upgrade, get_recipient_streams, get_sender_streams, get_stream, get_stream_count,
+    has_admin, set_admin, set_pending_upgrade, set_stream, set_stream_count, MIN_UPGRADE_DELAY,
 };
-use types::{CreateStreamParams, PayrollStream, StreamStatus, PendingUpgrade};
+use types::{CreateStreamParams, PayrollStream, PendingUpgrade, StreamStatus};
 
 #[contract]
 pub struct PayrollStreamContract;
@@ -121,9 +122,20 @@ impl PayrollStreamContract {
         }
         sender.require_auth();
 
-        let mut stream_ids: Vec<u32> = Vec::new(&env);
-        let mut count = get_stream_count(&env);
+        const MAX_BATCH_SIZE: u32 = 50;
+        let batch_size = streams.len();
+        if batch_size > MAX_BATCH_SIZE {
+            return Err(StreamError::BatchTooLarge);
+        }
 
+        let mut token_totals: Map<Address, i128> = Map::new(&env);
+        let count = get_stream_count(&env);
+        count
+            .checked_add(batch_size)
+            .ok_or(StreamError::ArithmeticError)?;
+
+        // Validate the entire batch and calculate every token obligation before
+        // moving funds or making any persistent changes.
         for stream_params in streams.iter() {
             let recipient = stream_params.recipient;
             let token = stream_params.token;
@@ -144,12 +156,37 @@ impl PayrollStreamContract {
                 return Err(StreamError::InvalidStartTime);
             }
 
+            let total = token_totals.get(token.clone()).unwrap_or(0);
+            token_totals.set(
+                token,
+                total
+                    .checked_add(total_amount)
+                    .ok_or(StreamError::ArithmeticError)?,
+            );
+        }
+
+        let contract_address = env.current_contract_address();
+        for (token, total) in token_totals.iter() {
+            let token_client = token::Client::new(&env, &token);
+            if token_client.balance(&sender) < total {
+                return Err(StreamError::InsufficientBalance);
+            }
+        }
+        for (token, total) in token_totals.iter() {
+            token::Client::new(&env, &token).transfer(&sender, &contract_address, &total);
+        }
+
+        let mut stream_ids: Vec<u32> = Vec::new(&env);
+        let mut next_id = count;
+        for stream_params in streams.iter() {
+            let recipient = stream_params.recipient;
+            let token = stream_params.token;
+            let total_amount = stream_params.total_amount;
+            let start_time = stream_params.start_time;
+            let end_time = stream_params.end_time;
             let duration = end_time - start_time;
             let rate_per_second = total_amount / (duration as i128);
-
-            token::Client::new(&env, &token).transfer(&sender, &env.current_contract_address(), &total_amount);
-            
-            let stream_id = count;
+            let stream_id = next_id;
             let stream = PayrollStream {
                 id: stream_id,
                 sender: sender.clone(),
@@ -164,18 +201,18 @@ impl PayrollStreamContract {
                 rate_per_second,
             };
 
-            // TODO: Transfer total_amount from sender to contract (batch transfer optimization possible)
-
-            
             set_stream(&env, stream_id, &stream);
             add_sender_stream(&env, &sender, stream_id);
             add_recipient_stream(&env, &recipient, stream_id);
 
+            env.events()
+                .publish((symbol_short!("s_create"), sender.clone()), stream_id);
+
             stream_ids.push_back(stream_id);
-            count += 1;
+            next_id = next_id.checked_add(1).ok_or(StreamError::ArithmeticError)?;
         }
 
-        set_stream_count(&env, count);
+        set_stream_count(&env, next_id);
 
         env.events().publish(
             (symbol_short!("b_create"), sender.clone()),
@@ -448,7 +485,8 @@ impl PayrollStreamContract {
             return Err(StreamError::TimelockNotExpired);
         }
 
-        env.deployer().update_current_contract_wasm(pending.wasm_hash);
+        env.deployer()
+            .update_current_contract_wasm(pending.wasm_hash);
         clear_pending_upgrade(&env);
         extend_instance_ttl(&env);
 
