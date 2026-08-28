@@ -35,4 +35,6 @@ pub enum StreamError {
     NoPendingUpgrade = 14,
     /// The upgrade timelock has not expired yet.
     TimelockNotExpired = 15,
+    /// The requested batch exceeds the supported maximum size.
+    BatchTooLarge = 16,
 }
