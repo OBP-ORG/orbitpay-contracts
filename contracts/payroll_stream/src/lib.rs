@@ -15,6 +15,8 @@ use storage::{
 };
 use types::{CreateStreamParams, PayrollStream, PendingUpgrade, StreamStatus};
 
+const MAX_BATCH_SIZE: u32 = 50;
+
 #[contract]
 pub struct PayrollStreamContract;
 
@@ -122,7 +124,6 @@ impl PayrollStreamContract {
         }
         sender.require_auth();
 
-        const MAX_BATCH_SIZE: u32 = 50;
         let batch_size = streams.len();
         if batch_size > MAX_BATCH_SIZE {
             return Err(StreamError::BatchTooLarge);

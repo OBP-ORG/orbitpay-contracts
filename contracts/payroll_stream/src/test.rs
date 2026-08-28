@@ -1,11 +1,24 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::{testutils::Address as _, testutils::Ledger, token, Address, Env, Vec};
+use soroban_sdk::{
+    testutils::{Address as _, EnvTestConfig, Ledger}, token, Address, Env, Vec,
+};
 use types::StreamStatus;
 
 fn setup_env() -> (Env, Address, PayrollStreamContractClient<'static>) {
     let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(PayrollStreamContract, ());
+    let client = PayrollStreamContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    (env, admin, client)
+}
+
+fn setup_env_without_snapshots() -> (Env, Address, PayrollStreamContractClient<'static>) {
+    let env = Env::new_with_config(EnvTestConfig {
+        capture_snapshot_at_drop: false,
+    });
     env.mock_all_auths();
     let contract_id = env.register(PayrollStreamContract, ());
     let client = PayrollStreamContractClient::new(&env, &contract_id);
@@ -263,6 +276,190 @@ fn test_batch_rejects_size_and_amount_overflow_without_transfer() {
     assert_eq!(client.get_stream_count(), 0);
     assert_eq!(token_client.balance(&sender), 100);
     assert_eq!(token_client.balance(&client.address), 0);
+}
+
+struct BatchCaseRng(u64);
+
+impl BatchCaseRng {
+    fn next_amount(&mut self) -> i128 {
+        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1);
+        ((self.0 >> 32) % 100 + 1) as i128
+    }
+}
+
+fn generated_batch(
+    env: &Env,
+    token: &Address,
+    count: u32,
+    seed: u64,
+) -> (Vec<CreateStreamParams>, Vec<Address>, i128) {
+    let mut rng = BatchCaseRng(seed);
+    let mut streams = Vec::new(env);
+    let mut recipients = Vec::new(env);
+    let mut total = 0;
+    for _ in 0..count {
+        let recipient = Address::generate(env);
+        let amount = rng.next_amount();
+        streams.push_back(CreateStreamParams {
+            recipient: recipient.clone(),
+            token: token.clone(),
+            total_amount: amount,
+            start_time: 1_000,
+            end_time: 2_000,
+        });
+        recipients.push_back(recipient);
+        total += amount;
+    }
+    (streams, recipients, total)
+}
+
+#[test]
+fn generated_batch_size_boundaries_preserve_escrow_and_indexes() {
+    for (seed, batch_size) in [(1, 0), (2, 1), (3, MAX_BATCH_SIZE), (4, MAX_BATCH_SIZE + 1)] {
+        let (env, admin, client) = setup_env_without_snapshots();
+        let sender = Address::generate(&env);
+        let token_admin = Address::generate(&env);
+        let token_contract = create_token_contract(&env, &token_admin);
+        let token = token_contract.address.clone();
+        let token_client = create_token_client(&env, &token);
+        let (streams, recipients, total) = generated_batch(&env, &token, batch_size, seed);
+        token_contract.mint(&sender, &(total + 1));
+        client.initialize(&admin);
+        env.ledger().with_mut(|li| li.timestamp = 1_000);
+
+        if batch_size <= MAX_BATCH_SIZE {
+            let ids = client.create_batch_streams(&sender, &streams);
+            assert_eq!(ids.len(), batch_size);
+            assert_eq!(client.get_stream_count(), batch_size);
+            assert_eq!(client.get_streams_by_sender(&sender).len(), batch_size);
+            assert_eq!(token_client.balance(&sender), 1);
+            assert_eq!(token_client.balance(&client.address), total);
+            for recipient in recipients.iter() {
+                assert_eq!(client.get_streams_by_recipient(&recipient).len(), 1);
+            }
+        } else {
+            assert_eq!(
+                client.try_create_batch_streams(&sender, &streams),
+                Err(Ok(StreamError::BatchTooLarge))
+            );
+            assert_eq!(client.get_stream_count(), 0);
+            assert_eq!(client.get_streams_by_sender(&sender).len(), 0);
+            assert_eq!(token_client.balance(&sender), total + 1);
+            assert_eq!(token_client.balance(&client.address), 0);
+            for recipient in recipients.iter() {
+                assert_eq!(client.get_streams_by_recipient(&recipient).len(), 0);
+            }
+        }
+    }
+}
+
+#[test]
+fn generated_repeated_token_overflow_leaves_all_state_unchanged() {
+    for seed in 1..=8 {
+        let (env, admin, client) = setup_env_without_snapshots();
+        let sender = Address::generate(&env);
+        let token_admin = Address::generate(&env);
+        let token_contract = create_token_contract(&env, &token_admin);
+        let token = token_contract.address.clone();
+        let token_client = create_token_client(&env, &token);
+        token_contract.mint(&sender, &100);
+        client.initialize(&admin);
+        env.ledger().with_mut(|li| li.timestamp = 1_000);
+
+        let mut rng = BatchCaseRng(seed);
+        let first_recipient = Address::generate(&env);
+        let second_recipient = Address::generate(&env);
+        let mut streams = Vec::new(&env);
+        streams.push_back(CreateStreamParams {
+            recipient: first_recipient.clone(),
+            token: token.clone(),
+            total_amount: i128::MAX,
+            start_time: 1_000,
+            end_time: 2_000,
+        });
+        streams.push_back(CreateStreamParams {
+            recipient: second_recipient.clone(),
+            token,
+            total_amount: rng.next_amount(),
+            start_time: 1_000,
+            end_time: 2_000,
+        });
+
+        assert_eq!(
+            client.try_create_batch_streams(&sender, &streams),
+            Err(Ok(StreamError::ArithmeticError))
+        );
+        assert_eq!(client.get_stream_count(), 0);
+        assert_eq!(client.get_streams_by_sender(&sender).len(), 0);
+        assert_eq!(client.get_streams_by_recipient(&first_recipient).len(), 0);
+        assert_eq!(client.get_streams_by_recipient(&second_recipient).len(), 0);
+        assert_eq!(token_client.balance(&sender), 100);
+        assert_eq!(token_client.balance(&client.address), 0);
+    }
+}
+
+#[test]
+fn generated_invalid_and_underfunded_batches_leave_all_state_unchanged() {
+    for seed in 1..=8 {
+        for invalid_case in 0..4 {
+            let (env, admin, client) = setup_env_without_snapshots();
+            let sender = Address::generate(&env);
+            let token_admin = Address::generate(&env);
+            let token_contract = create_token_contract(&env, &token_admin);
+            let token = token_contract.address.clone();
+            let token_client = create_token_client(&env, &token);
+            let (mut streams, recipients, total) = generated_batch(&env, &token, 3, seed);
+            token_contract.mint(&sender, &(total + 1));
+            client.initialize(&admin);
+            env.ledger().with_mut(|li| li.timestamp = 1_000);
+
+            let mut invalid = streams.get(1).unwrap();
+            match invalid_case {
+                0 => invalid.recipient = sender.clone(),
+                1 => invalid.total_amount = 0,
+                2 => invalid.end_time = invalid.start_time,
+                _ => invalid.start_time = 999,
+            }
+            streams.set(1, invalid);
+
+            assert!(client.try_create_batch_streams(&sender, &streams).is_err());
+            assert_eq!(client.get_stream_count(), 0);
+            assert_eq!(client.get_streams_by_sender(&sender).len(), 0);
+            assert_eq!(token_client.balance(&sender), total + 1);
+            assert_eq!(token_client.balance(&client.address), 0);
+            for recipient in recipients.iter() {
+                assert_eq!(client.get_streams_by_recipient(&recipient).len(), 0);
+            }
+        }
+
+        let (env, admin, client) = setup_env_without_snapshots();
+        let sender = Address::generate(&env);
+        let token_admin = Address::generate(&env);
+        let token_contract = create_token_contract(&env, &token_admin);
+        let token = token_contract.address.clone();
+        let token_client = create_token_client(&env, &token);
+        let (streams, recipients, total) = generated_batch(
+            &env,
+            &token,
+            (seed % MAX_BATCH_SIZE as u64) as u32 + 1,
+            seed,
+        );
+        token_contract.mint(&sender, &(total - 1));
+        client.initialize(&admin);
+        env.ledger().with_mut(|li| li.timestamp = 1_000);
+
+        assert_eq!(
+            client.try_create_batch_streams(&sender, &streams),
+            Err(Ok(StreamError::InsufficientBalance))
+        );
+        assert_eq!(client.get_stream_count(), 0);
+        assert_eq!(client.get_streams_by_sender(&sender).len(), 0);
+        assert_eq!(token_client.balance(&sender), total - 1);
+        assert_eq!(token_client.balance(&client.address), 0);
+        for recipient in recipients.iter() {
+            assert_eq!(client.get_streams_by_recipient(&recipient).len(), 0);
+        }
+    }
 }
 
 #[test]
