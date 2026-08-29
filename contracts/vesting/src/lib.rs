@@ -447,3 +447,5 @@ impl VestingContract {
 }
 
 mod test;
+#[cfg(test)]
+mod test_properties;
