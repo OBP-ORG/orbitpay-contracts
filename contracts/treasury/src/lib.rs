@@ -885,6 +885,7 @@ impl TreasuryContract {
             admin: get_admin(&env),
             signers: get_signers(&env),
             threshold: get_threshold(&env),
+            signer_set_version: get_signer_set_version(&env),
             proposal_count: get_proposal_count(&env),
             paused: is_paused(&env),
         })
