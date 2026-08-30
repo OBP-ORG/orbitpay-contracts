@@ -1,7 +1,9 @@
 //! Property-based tests for the vesting contract.
 //!
 //! Uses proptest to generate random valid schedules and verify that core
-//! invariants hold across thousands of random scenarios.
+//! invariants hold across thousands of random scenarios. Every assertion
+//! includes the full generated input tuple so a failing case can be
+//! replayed by appending it to `proptest-regressions/test_properties.txt`.
 
 #![cfg(test)]
 
@@ -36,14 +38,12 @@ proptest! {
     /// After revoke: claimed + unvested + remaining_claimable == original_total.
     #[test]
     fn prop_conservation_revoke(
-        seed in 0u32..u32::MAX,
         total in 10_000_i128..1_000_000_i128,
         cliff_dur in 1u64..86_400u64,
         cliff_amt in 1i128..50_000_i128,
         total_dur in 1u64..50_000u64,
         mid_pct in 1u64..99u64,
     ) {
-        let _ = seed;
         prop_assume!(cliff_dur < total_dur);
         prop_assume!(cliff_amt <= total / 2);
 
@@ -79,8 +79,10 @@ proptest! {
         assert_eq!(
             claimed + unvested + remaining_claimable,
             original,
-            "CONSERVATION VIOLATED after revoke (seed={seed}): \
-             claimed={claimed} + unvested={unvested} + remaining={remaining_claimable} != original={original}"
+            "CONSERVATION VIOLATED after revoke: total={total} cliff_dur={cliff_dur} \
+             cliff_amt={cliff_amt} total_dur={total_dur} mid_pct={mid_pct} \
+             claimed={claimed} + unvested={unvested} + remaining={remaining_claimable} \
+             != original={original}"
         );
         assert_eq!(schedule.status, VestingStatus::Revoked);
     }
@@ -88,14 +90,12 @@ proptest! {
     /// Claim some, then revoke — conservation must hold.
     #[test]
     fn prop_conservation_claim_then_revoke(
-        seed in 0u32..u32::MAX,
         total in 10_000_i128..1_000_000_i128,
         cliff_dur in 1u64..86_400u64,
         cliff_amt in 1i128..50_000_i128,
         total_dur in 1u64..50_000u64,
         claim_pct in 1u64..80u64,
     ) {
-        let _ = seed;
         prop_assume!(cliff_dur < total_dur);
         prop_assume!(cliff_amt <= total / 2);
 
@@ -136,8 +136,10 @@ proptest! {
         assert_eq!(
             claimed + unvested + remaining_claimable,
             original,
-            "CONSERVATION VIOLATED after claim+revoke (seed={seed}): \
-             claimed={claimed} + unvested={unvested} + remaining={remaining_claimable} != original={original}"
+            "CONSERVATION VIOLATED after claim+revoke: total={total} cliff_dur={cliff_dur} \
+             cliff_amt={cliff_amt} total_dur={total_dur} claim_pct={claim_pct} \
+             claimed={claimed} + unvested={unvested} + remaining={remaining_claimable} \
+             != original={original}"
         );
         assert_eq!(schedule.status, VestingStatus::Revoked);
         prop_assume!(claimed_before > 0, "skip: no claimable tokens at this time step");
@@ -146,7 +148,6 @@ proptest! {
     /// vested(t) is non-decreasing as ledger time advances.
     #[test]
     fn prop_monotonic_vested(
-        seed in 0u32..u32::MAX,
         total in 10_000_i128..1_000_000_i128,
         cliff_dur in 1u64..86_400u64,
         cliff_amt in 1i128..50_000_i128,
@@ -154,7 +155,6 @@ proptest! {
         t1_pct in 1u64..50u64,
         t2_pct in 51u64..100u64,
     ) {
-        let _ = seed;
         prop_assume!(cliff_dur < total_dur);
         prop_assume!(cliff_amt <= total / 2);
 
@@ -188,7 +188,8 @@ proptest! {
 
         assert!(
             vested_t2 >= vested_t1,
-            "MONOTONICITY VIOLATED (seed={seed}): \
+            "MONOTONICITY VIOLATED: total={total} cliff_dur={cliff_dur} \
+             cliff_amt={cliff_amt} total_dur={total_dur} t1_pct={t1_pct} t2_pct={t2_pct} \
              vested(t1={t1})={vested_t1} > vested(t2={t2})={vested_t2}"
         );
     }
@@ -196,13 +197,11 @@ proptest! {
     /// claimable == 0 before cliff, > 0 after cliff (when cliff_amount > 0).
     #[test]
     fn prop_cliff_enforcement(
-        seed in 0u32..u32::MAX,
         total in 10_000_i128..1_000_000_i128,
         cliff_dur in 1u64..86_400u64,
         cliff_amt in 1_000_i128..50_000_i128,
         total_dur in 1u64..50_000u64,
     ) {
-        let _ = seed;
         prop_assume!(cliff_dur < total_dur);
         prop_assume!(cliff_amt <= total / 2);
 
@@ -229,7 +228,8 @@ proptest! {
         let progress_before = client.get_progress(&schedule_id);
         assert_eq!(
             progress_before.claimable_amount, 0,
-            "CLIFF VIOLATED before cliff (seed={seed}): \
+            "CLIFF VIOLATED before cliff: total={total} cliff_dur={cliff_dur} \
+             cliff_amt={cliff_amt} total_dur={total_dur} \
              claimable={} at t={} (cliff at t={})",
             progress_before.claimable_amount, before_cliff, start + cliff_dur,
         );
@@ -239,7 +239,8 @@ proptest! {
         let progress_after = client.get_progress(&schedule_id);
         assert!(
             progress_after.claimable_amount > 0,
-            "CLIFF VIOLATED after cliff (seed={seed}): \
+            "CLIFF VIOLATED after cliff: total={total} cliff_dur={cliff_dur} \
+             cliff_amt={cliff_amt} total_dur={total_dur} \
              claimable={} at t={}",
             progress_after.claimable_amount, after_cliff,
         );
@@ -248,13 +249,11 @@ proptest! {
     /// FullyClaimed schedules reject claim(); revoked schedules reject revoke().
     #[test]
     fn prop_terminal_states_reject_claim(
-        seed in 0u32..u32::MAX,
         total in 10_000_i128..1_000_000_i128,
         cliff_dur in 1u64..86_400u64,
         cliff_amt in 1i128..50_000_i128,
         total_dur in 1u64..50_000u64,
     ) {
-        let _ = seed;
         prop_assume!(cliff_dur < total_dur);
         prop_assume!(cliff_amt <= total / 2);
 
@@ -287,27 +286,29 @@ proptest! {
         let claim_result = client.try_claim(&beneficiary, &schedule_id);
         assert!(
             claim_result.is_err(),
-            "TERMINAL STATE VIOLATED (seed={seed}): claim succeeded on FullyClaimed schedule"
+            "TERMINAL STATE VIOLATED: total={total} cliff_dur={cliff_dur} \
+             cliff_amt={cliff_amt} total_dur={total_dur} \
+             claim succeeded on FullyClaimed schedule"
         );
 
         let revoke_result = client.try_revoke(&grantor, &schedule_id);
         assert!(
             revoke_result.is_err(),
-            "TERMINAL STATE VIOLATED (seed={seed}): revoke succeeded on FullyClaimed schedule"
+            "TERMINAL STATE VIOLATED: total={total} cliff_dur={cliff_dur} \
+             cliff_amt={cliff_amt} total_dur={total_dur} \
+             revoke succeeded on FullyClaimed schedule"
         );
     }
 
     /// claim -> revoke recovers unvested to grantor, conservation holds.
     #[test]
     fn prop_claim_roundtrip(
-        seed in 0u32..u32::MAX,
         total in 10_000_i128..1_000_000_i128,
         cliff_dur in 1u64..86_400u64,
         cliff_amt in 1i128..50_000_i128,
         total_dur in 1u64..50_000u64,
         claim_pct in 10u64..80u64,
     ) {
-        let _ = seed;
         prop_assume!(cliff_dur < total_dur);
         prop_assume!(cliff_amt <= total / 2);
 
@@ -347,7 +348,8 @@ proptest! {
 
         assert_eq!(
             grantor_gained, unvested,
-            "ROUNDTRIP VIOLATED (seed={seed}): \
+            "ROUNDTRIP VIOLATED: total={total} cliff_dur={cliff_dur} \
+             cliff_amt={cliff_amt} total_dur={total_dur} claim_pct={claim_pct} \
              grantor gained {grantor_gained} but revoke returned {unvested}"
         );
 
@@ -357,7 +359,8 @@ proptest! {
         assert_eq!(
             schedule.claimed_amount + unvested + remaining,
             original,
-            "ROUNDTRIP CONSERVATION VIOLATED (seed={seed}): \
+            "ROUNDTRIP CONSERVATION VIOLATED: total={total} cliff_dur={cliff_dur} \
+             cliff_amt={cliff_amt} total_dur={total_dur} claim_pct={claim_pct} \
              claimed={} + unvested={unvested} + remaining={remaining} != original={original}",
             schedule.claimed_amount,
         );
