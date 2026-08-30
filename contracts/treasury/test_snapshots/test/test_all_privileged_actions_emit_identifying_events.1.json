@@ -301,7 +301,7 @@
                         "symbol": "signer_set_version"
                       },
                       "val": {
-                        "u32": 2
+                        "u32": 3
                       }
                     }
                   ]
@@ -399,7 +399,7 @@
                         "symbol": "signer_set_version"
                       },
                       "val": {
-                        "u32": 2
+                        "u32": 3
                       }
                     },
                     {
@@ -517,7 +517,7 @@
                         "symbol": "signer_set_version"
                       },
                       "val": {
-                        "u32": 2
+                        "u32": 3
                       }
                     },
                     {
@@ -635,7 +635,7 @@
                         "symbol": "signer_set_version"
                       },
                       "val": {
-                        "u32": 2
+                        "u32": 3
                       }
                     },
                     {
@@ -751,7 +751,7 @@
                           ]
                         },
                         "val": {
-                          "u32": 2
+                          "u32": 3
                         }
                       },
                       {

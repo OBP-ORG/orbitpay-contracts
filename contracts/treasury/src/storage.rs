@@ -1,6 +1,6 @@
 use soroban_sdk::{contracttype, Address, Env, Vec};
 
-use crate::types::{UpgradeProposal, PauseState, PendingAdminChange, WithdrawalRequest};
+use crate::types::{PauseState, PendingAdminChange, UpgradeProposal, WithdrawalRequest};
 
 pub(crate) const MIN_SIGNER_CHANGE_DELAY: u64 = 24 * 60 * 60; // 1 day in seconds
 
@@ -152,7 +152,9 @@ pub fn get_signer_change_delay(env: &Env) -> u64 {
 }
 
 pub fn set_signer_change_delay(env: &Env, delay: u64) {
-    env.storage().instance().set(&DataKey::SignerChangeDelay, &delay);
+    env.storage()
+        .instance()
+        .set(&DataKey::SignerChangeDelay, &delay);
 }
 
 // ── Pending admin change helpers ────────────────────────────────────
@@ -168,7 +170,9 @@ pub fn set_pending_admin_change(env: &Env, change: &PendingAdminChange) {
 }
 
 pub fn clear_pending_admin_change(env: &Env) {
-    env.storage().persistent().remove(&DataKey::PendingAdminChange);
+    env.storage()
+        .persistent()
+        .remove(&DataKey::PendingAdminChange);
 }
 
 // ── Upgrade proposal helpers ────────────────────────────────────────
@@ -191,9 +195,7 @@ pub fn get_upgrade_count(env: &Env) -> u32 {
 }
 
 pub fn set_upgrade_count(env: &Env, count: u32) {
-    env.storage()
-        .instance()
-        .set(&DataKey::UpgradeCount, &count);
+    env.storage().instance().set(&DataKey::UpgradeCount, &count);
 }
 
 // ── TTL helpers ──────────────────────────────────────────────────

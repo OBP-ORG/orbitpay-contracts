@@ -70,7 +70,7 @@ The following invariants MUST hold true at all times across the OrbitPay smart c
 *   **I-ROT-1:** Pending signer changes MUST be stored with `effective_at` timestamp.
 *   **I-ROT-2:** Signer addition MUST increment `signer_set_version`.
 *   **I-ROT-3:** Signer removal MUST increment `signer_set_version`.
-*   **I-ROT-4:** Pending withdrawals retain the `signer_set_version` at creation time so that original signers can still approve.
+*   **I-ROT-4:** A withdrawal is bound to its creation `signer_set_version`; after a signer or threshold change, stale withdrawals MUST reject approval and execution with `StaleSignerSet`.
 *   **I-ROT-5:** Removing a signer MUST NOT reduce the signer count below the current threshold.
 
 ---
