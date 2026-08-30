@@ -65,4 +65,7 @@ pub enum TreasuryError {
     NoPendingAdminChange = 21,
     /// Upgrade proposal already executed.
     UpgradeProposalExecuted = 22,
+    /// The signer set or threshold changed after this withdrawal was created.
+    /// Stale withdrawals cannot receive approvals or be executed.
+    StaleSignerSet = 23,
 }

@@ -111,6 +111,8 @@ pub struct TreasuryConfig {
     pub signers: Vec<Address>,
     /// Number of approvals required for a withdrawal.
     pub threshold: u32,
+    /// Version of the signer set and approval threshold.
+    pub signer_set_version: u32,
     /// Total number of proposals created.
     pub proposal_count: u32,
     /// Current pause state.

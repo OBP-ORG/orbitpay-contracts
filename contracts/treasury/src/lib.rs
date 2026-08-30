@@ -7,17 +7,19 @@ mod types;
 
 use errors::TreasuryError;
 use storage::{
-    get_admin, get_proposal_count, get_signers, get_threshold, get_withdrawal, has_admin,
-    set_admin, set_proposal_count, set_signers, set_threshold, set_withdrawal,
-    extend_instance_ttl, extend_withdrawal_ttl, extend_upgrade_proposal_ttl,
-    extend_pending_admin_change_ttl, get_signer_set_version, set_signer_set_version,
-    increment_signer_set_version, get_pause_state, set_pause_state, is_paused,
-    get_signer_change_delay, set_signer_change_delay, get_pending_admin_change,
-    set_pending_admin_change, get_upgrade_proposal, set_upgrade_proposal,
-    get_upgrade_count, set_upgrade_count, clear_pending_admin_change,
+    clear_pending_admin_change, extend_instance_ttl, extend_pending_admin_change_ttl,
+    extend_upgrade_proposal_ttl, extend_withdrawal_ttl, get_admin, get_pause_state,
+    get_pending_admin_change, get_proposal_count, get_signer_change_delay, get_signer_set_version,
+    get_signers, get_threshold, get_upgrade_count, get_upgrade_proposal, get_withdrawal, has_admin,
+    increment_signer_set_version, is_paused, set_admin, set_pause_state, set_pending_admin_change,
+    set_proposal_count, set_signer_change_delay, set_signer_set_version, set_signers,
+    set_threshold, set_upgrade_count, set_upgrade_proposal, set_withdrawal,
     MIN_SIGNER_CHANGE_DELAY,
 };
-use types::{TreasuryConfig, WithdrawalRequest, WithdrawalStatus, PauseState, UpgradeProposal, UpgradeStatus, PendingAdminChange};
+use types::{
+    PauseState, PendingAdminChange, TreasuryConfig, UpgradeProposal, UpgradeStatus,
+    WithdrawalRequest, WithdrawalStatus,
+};
 
 #[contract]
 pub struct TreasuryContract;
@@ -117,7 +119,11 @@ impl TreasuryContract {
         let threshold = get_threshold(&env);
         let mut approvals = Vec::new(&env);
         approvals.push_back(proposer.clone());
-        let status = if threshold == 1 { WithdrawalStatus::Approved } else { WithdrawalStatus::Pending };
+        let status = if threshold == 1 {
+            WithdrawalStatus::Approved
+        } else {
+            WithdrawalStatus::Pending
+        };
         let request = WithdrawalRequest {
             id: proposal_id,
             proposer: proposer.clone(),
@@ -159,6 +165,9 @@ impl TreasuryContract {
         }
         let mut request =
             get_withdrawal(&env, proposal_id).ok_or(TreasuryError::ProposalNotFound)?;
+        if request.signer_set_version != get_signer_set_version(&env) {
+            return Err(TreasuryError::StaleSignerSet);
+        }
         if request.status != WithdrawalStatus::Pending {
             return Err(TreasuryError::ProposalNotPending);
         }
@@ -188,6 +197,9 @@ impl TreasuryContract {
         executor.require_auth();
         let mut request =
             get_withdrawal(&env, proposal_id).ok_or(TreasuryError::ProposalNotFound)?;
+        if request.signer_set_version != get_signer_set_version(&env) {
+            return Err(TreasuryError::StaleSignerSet);
+        }
         if request.status != WithdrawalStatus::Approved {
             return Err(TreasuryError::ProposalNotApproved);
         }
@@ -227,7 +239,13 @@ impl TreasuryContract {
         let threshold = get_threshold(&env);
         extend_instance_ttl(&env);
         env.events().publish(
-            (symbol_short!("sa"), admin.clone(), new_signer.clone(), threshold, new_version),
+            (
+                symbol_short!("sa"),
+                admin.clone(),
+                new_signer.clone(),
+                threshold,
+                new_version,
+            ),
             (signers.len(),),
         );
         Ok(())
@@ -262,7 +280,13 @@ impl TreasuryContract {
         let new_version = increment_signer_set_version(&env);
         extend_instance_ttl(&env);
         env.events().publish(
-            (symbol_short!("sr"), admin.clone(), signer.clone(), threshold, new_version),
+            (
+                symbol_short!("sr"),
+                admin.clone(),
+                signer.clone(),
+                threshold,
+                new_version,
+            ),
             (new_signers.len(),),
         );
         Ok(())
@@ -284,10 +308,16 @@ impl TreasuryContract {
             return Err(TreasuryError::InvalidThreshold);
         }
         set_threshold(&env, new_threshold);
-        let signer_set_version = get_signer_set_version(&env);
+        let signer_set_version = increment_signer_set_version(&env);
         extend_instance_ttl(&env);
         env.events().publish(
-            (symbol_short!("t_upd"), admin.clone(), new_threshold, signers.len(), signer_set_version),
+            (
+                symbol_short!("t_upd"),
+                admin.clone(),
+                new_threshold,
+                signers.len(),
+                signer_set_version,
+            ),
             (),
         );
         Ok(())
@@ -317,7 +347,11 @@ impl TreasuryContract {
         let threshold = get_threshold(&env);
         let mut approvals = Vec::new(&env);
         approvals.push_back(proposer.clone());
-        let status = if threshold == 1 { UpgradeStatus::Approved } else { UpgradeStatus::Pending };
+        let status = if threshold == 1 {
+            UpgradeStatus::Approved
+        } else {
+            UpgradeStatus::Pending
+        };
         let proposal = UpgradeProposal {
             id: proposal_id,
             proposer: proposer.clone(),
@@ -332,18 +366,12 @@ impl TreasuryContract {
         set_upgrade_count(&env, proposal_id + 1);
         extend_upgrade_proposal_ttl(&env, proposal_id);
         extend_instance_ttl(&env);
-        env.events().publish(
-            (symbol_short!("pp"), proposer),
-            (proposal_id, reason),
-        );
+        env.events()
+            .publish((symbol_short!("pp"), proposer), (proposal_id, reason));
         Ok(proposal_id)
     }
 
-    pub fn approve_pause(
-        env: Env,
-        signer: Address,
-        proposal_id: u32,
-    ) -> Result<(), TreasuryError> {
+    pub fn approve_pause(env: Env, signer: Address, proposal_id: u32) -> Result<(), TreasuryError> {
         Self::require_initialized(&env)?;
         signer.require_auth();
         let mut proposal = get_upgrade_proposal(&env, proposal_id)
@@ -361,10 +389,8 @@ impl TreasuryContract {
         if proposal.approvals.len() >= threshold {
             proposal.status = UpgradeStatus::Approved;
             set_pause_state(&env, &PauseState::Paused);
-            env.events().publish(
-                (symbol_short!("pe"), signer),
-                proposal.description.clone(),
-            );
+            env.events()
+                .publish((symbol_short!("pe"), signer), proposal.description.clone());
         }
         set_upgrade_proposal(&env, proposal_id, &proposal);
         extend_upgrade_proposal_ttl(&env, proposal_id);
@@ -393,7 +419,11 @@ impl TreasuryContract {
         let threshold = get_threshold(&env);
         let mut approvals = Vec::new(&env);
         approvals.push_back(proposer.clone());
-        let status = if threshold == 1 { UpgradeStatus::Approved } else { UpgradeStatus::Pending };
+        let status = if threshold == 1 {
+            UpgradeStatus::Approved
+        } else {
+            UpgradeStatus::Pending
+        };
         let proposal = UpgradeProposal {
             id: proposal_id,
             proposer: proposer.clone(),
@@ -408,10 +438,8 @@ impl TreasuryContract {
         set_upgrade_count(&env, proposal_id + 1);
         extend_upgrade_proposal_ttl(&env, proposal_id);
         extend_instance_ttl(&env);
-        env.events().publish(
-            (symbol_short!("up"), proposer),
-            (proposal_id, reason),
-        );
+        env.events()
+            .publish((symbol_short!("up"), proposer), (proposal_id, reason));
         Ok(proposal_id)
     }
 
@@ -437,10 +465,8 @@ impl TreasuryContract {
         if proposal.approvals.len() >= threshold {
             proposal.status = UpgradeStatus::Approved;
             set_pause_state(&env, &PauseState::Unpaused);
-            env.events().publish(
-                (symbol_short!("ue"), signer),
-                proposal.description.clone(),
-            );
+            env.events()
+                .publish((symbol_short!("ue"), signer), proposal.description.clone());
         }
         set_upgrade_proposal(&env, proposal_id, &proposal);
         extend_upgrade_proposal_ttl(&env, proposal_id);
@@ -472,7 +498,11 @@ impl TreasuryContract {
         let threshold = get_threshold(&env);
         let mut approvals = Vec::new(&env);
         approvals.push_back(proposer.clone());
-        let status = if threshold == 1 { UpgradeStatus::Approved } else { UpgradeStatus::Pending };
+        let status = if threshold == 1 {
+            UpgradeStatus::Approved
+        } else {
+            UpgradeStatus::Pending
+        };
         let proposal = UpgradeProposal {
             id: proposal_id,
             proposer,
@@ -487,10 +517,8 @@ impl TreasuryContract {
         set_upgrade_count(&env, proposal_id + 1);
         extend_upgrade_proposal_ttl(&env, proposal_id);
         extend_instance_ttl(&env);
-        env.events().publish(
-            (symbol_short!("ug_prop"),),
-            (proposal_id, description),
-        );
+        env.events()
+            .publish((symbol_short!("ug_prop"),), (proposal_id, description));
         Ok(proposal_id)
     }
 
@@ -530,10 +558,8 @@ impl TreasuryContract {
         set_upgrade_proposal(&env, proposal_id, &proposal);
         extend_upgrade_proposal_ttl(&env, proposal_id);
         extend_instance_ttl(&env);
-        env.events().publish(
-            (symbol_short!("ua"), signer),
-            proposal_id,
-        );
+        env.events()
+            .publish((symbol_short!("ua"), signer), proposal_id);
         Ok(())
     }
 
@@ -549,7 +575,8 @@ impl TreasuryContract {
         if proposal.status != UpgradeStatus::Approved {
             return Err(TreasuryError::UpgradeProposalNotPending);
         }
-        env.deployer().update_current_contract_wasm(proposal.wasm_hash);
+        env.deployer()
+            .update_current_contract_wasm(proposal.wasm_hash);
         env.events().publish(
             (symbol_short!("ug_exec"), executor),
             (proposal_id, proposal.description),
@@ -589,8 +616,7 @@ impl TreasuryContract {
 
     pub fn execute_admin_change(env: Env) -> Result<Address, TreasuryError> {
         Self::require_initialized(&env)?;
-        let pending = get_pending_admin_change(&env)
-            .ok_or(TreasuryError::NoPendingAdminChange)?;
+        let pending = get_pending_admin_change(&env).ok_or(TreasuryError::NoPendingAdminChange)?;
         let now = env.ledger().timestamp();
         if now < pending.effective_at {
             return Err(TreasuryError::TimelockNotExpired);
@@ -599,10 +625,8 @@ impl TreasuryContract {
         set_admin(&env, &pending.new_admin.clone());
         clear_pending_admin_change(&env);
         extend_instance_ttl(&env);
-        env.events().publish(
-            (symbol_short!("ad"), old_admin),
-            pending.new_admin.clone(),
-        );
+        env.events()
+            .publish((symbol_short!("ad"), old_admin), pending.new_admin.clone());
         Ok(pending.new_admin)
     }
 
@@ -615,10 +639,7 @@ impl TreasuryContract {
         admin.require_auth();
         clear_pending_admin_change(&env);
         extend_instance_ttl(&env);
-        env.events().publish(
-            (symbol_short!("acc"), admin),
-            (),
-        );
+        env.events().publish((symbol_short!("acc"), admin), ());
         Ok(())
     }
 
@@ -758,7 +779,11 @@ impl TreasuryContract {
         let threshold = get_threshold(&env);
         let mut approvals = Vec::new(&env);
         approvals.push_back(proposer.clone());
-        let status = if threshold == 1 { UpgradeStatus::Approved } else { UpgradeStatus::Pending };
+        let status = if threshold == 1 {
+            UpgradeStatus::Approved
+        } else {
+            UpgradeStatus::Pending
+        };
         let proposal = UpgradeProposal {
             id: proposal_id,
             proposer,
@@ -802,10 +827,8 @@ impl TreasuryContract {
         let old_admin = get_admin(&env);
         set_admin(&env, &executor);
         extend_instance_ttl(&env);
-        env.events().publish(
-            (symbol_short!("eacd"), executor.clone()),
-            old_admin.clone(),
-        );
+        env.events()
+            .publish((symbol_short!("eacd"), executor.clone()), old_admin.clone());
         Ok(())
     }
 
@@ -825,10 +848,8 @@ impl TreasuryContract {
         }
         set_signer_change_delay(&env, new_delay);
         extend_instance_ttl(&env);
-        env.events().publish(
-            (symbol_short!("du"), admin),
-            new_delay,
-        );
+        env.events()
+            .publish((symbol_short!("du"), admin), new_delay);
         Ok(())
     }
 
@@ -879,7 +900,10 @@ impl TreasuryContract {
         get_pending_admin_change(&env).ok_or(TreasuryError::NoPendingAdminChange)
     }
 
-    pub fn get_upgrade_proposal(env: Env, proposal_id: u32) -> Result<UpgradeProposal, TreasuryError> {
+    pub fn get_upgrade_proposal(
+        env: Env,
+        proposal_id: u32,
+    ) -> Result<UpgradeProposal, TreasuryError> {
         Self::require_initialized(&env)?;
         get_upgrade_proposal(&env, proposal_id).ok_or(TreasuryError::UpgradeProposalNotFound)
     }

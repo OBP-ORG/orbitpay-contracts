@@ -1,7 +1,9 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::{symbol_short, testutils::Address as _, testutils::Ledger, token, Address, Env, Vec};
+use soroban_sdk::{
+    symbol_short, testutils::Address as _, testutils::Ledger, token, Address, Env, Vec,
+};
 use types::WithdrawalStatus;
 
 fn setup_env() -> (Env, Address, TreasuryContractClient<'static>) {
@@ -407,7 +409,8 @@ fn test_threshold_one_immediate_approval() {
 }
 
 #[test]
-fn test_signer_rotation_with_pending_withdrawal() {
+#[should_panic(expected = "Error(Contract, #23)")]
+fn test_rotation_before_approval_rejects_stale_withdrawal() {
     let (env, admin, client) = setup_env();
     let signer1 = Address::generate(&env);
     let signer2 = Address::generate(&env);
@@ -437,18 +440,17 @@ fn test_signer_rotation_with_pending_withdrawal() {
     client.add_signer(&admin, &signer3);
     assert_eq!(client.get_signers().len(), 3);
 
-    // The pending withdrawal still has signer_set_version 0
+    // The request remains bound to the old signer-set version.
     let request = client.get_withdrawal(&proposal_id);
     assert_eq!(request.signer_set_version, 0);
 
-    // Original signer2 can still approve (was in signer set version 0)
+    // Approvals cannot mix signers from different versions.
     client.approve_withdrawal(&signer2, &proposal_id);
-    let request = client.get_withdrawal(&proposal_id);
-    assert_eq!(request.status, WithdrawalStatus::Approved);
 }
 
 #[test]
-fn test_signer_removal_does_not_invalidate_pending_withdrawal() {
+#[should_panic(expected = "Error(Contract, #23)")]
+fn test_signer_removal_invalidates_pending_withdrawal() {
     let (env, admin, client) = setup_env();
     let signer1 = Address::generate(&env);
     let signer2 = Address::generate(&env);
@@ -483,10 +485,39 @@ fn test_signer_removal_does_not_invalidate_pending_withdrawal() {
     let request = client.get_withdrawal(&proposal_id);
     assert_eq!(request.signer_set_version, 0);
 
-    // Original signer2 can still approve (was in signer set version 0)
+    // The old version cannot collect further approvals.
     client.approve_withdrawal(&signer2, &proposal_id);
-    let request = client.get_withdrawal(&proposal_id);
-    assert_eq!(request.status, WithdrawalStatus::Approved);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #23)")]
+fn test_rotation_before_execution_rejects_stale_withdrawal() {
+    let (env, admin, client) = setup_env();
+    let signer1 = Address::generate(&env);
+    let signer2 = Address::generate(&env);
+    let signer3 = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let mut signers = Vec::new(&env);
+    signers.push_back(signer1.clone());
+    signers.push_back(signer2.clone());
+
+    let token_admin = Address::generate(&env);
+    let token_admin_client = create_token_contract(&env, &token_admin);
+    let token = token_admin_client.address.clone();
+
+    client.initialize(&admin, &signers, &2);
+    token_admin_client.mint(&client.address, &1000_i128);
+    let proposal_id = client.create_withdrawal(
+        &signer1,
+        &token,
+        &recipient,
+        &1000_i128,
+        &symbol_short!("salary"),
+    );
+    client.approve_withdrawal(&signer2, &proposal_id);
+    client.add_signer(&admin, &signer3);
+
+    client.execute_withdrawal(&signer1, &proposal_id);
 }
 
 #[test]
@@ -510,7 +541,10 @@ fn test_deposit() {
     let deposit_amount = 15000;
     client.deposit(&depositor, &token, &deposit_amount);
 
-    assert_eq!(token_client.balance(&depositor), initial_balance - deposit_amount);
+    assert_eq!(
+        token_client.balance(&depositor),
+        initial_balance - deposit_amount
+    );
     assert_eq!(token_client.balance(&client.address), deposit_amount);
 }
 
@@ -533,10 +567,10 @@ fn test_pause_and_unpause_flow() {
 
     // Propose pause (threshold 2, so needs another approval)
     let pause_proposal = client.propose_pause(&signer1, &symbol_short!("sec_inc"));
-    
+
     // Approve pause with signer2
     client.approve_pause(&signer2, &pause_proposal);
-    
+
     // Verify paused
     let pause_state = client.get_pause_state();
     assert_eq!(pause_state, types::PauseState::Paused);
@@ -605,13 +639,9 @@ fn test_upgrade_proposal_flow() {
     client.initialize(&admin, &signers, &2);
 
     let new_wasm_hash = soroban_sdk::BytesN::from_array(&env, &[1; 32]);
-    
+
     // Propose upgrade
-    let proposal_id = client.propose_upgrade(
-        &signer1,
-        &new_wasm_hash,
-        &symbol_short!("v2"),
-    );
+    let proposal_id = client.propose_upgrade(&signer1, &new_wasm_hash, &symbol_short!("v2"));
     assert_eq!(proposal_id, 0);
 
     // Approve with signer2
@@ -636,14 +666,14 @@ fn test_admin_change_timelock() {
     client.initialize(&admin, &signers, &2);
 
     let new_admin = Address::generate(&env);
-    
+
     // Propose admin change
     client.propose_admin_change(&admin, &new_admin);
 
     // Verify pending admin change exists
     let pending = client.get_pending_admin_change();
     assert_eq!(pending.new_admin, new_admin);
-    
+
     // Cancel the pending change
     client.cancel_admin_change(&admin);
 }
@@ -696,7 +726,7 @@ fn test_emergency_admin_change_flow() {
 
     // Emergency admin change proposed by signer (not admin)
     let proposal_id = client.propose_emergency_admin_change(&signer1, &new_admin);
-    
+
     // Approve with signer2
     client.approve_upgrade(&signer2, &proposal_id);
 
@@ -804,12 +834,20 @@ fn test_migration_with_multiple_approvals() {
 
     // Create multiple pending withdrawals
     let id1 = client.create_withdrawal(
-        &signer1, &token, &recipient1, &1000_i128, &symbol_short!("w1"),
+        &signer1,
+        &token,
+        &recipient1,
+        &1000_i128,
+        &symbol_short!("w1"),
     );
     client.approve_withdrawal(&signer2, &id1);
 
     let id2 = client.create_withdrawal(
-        &signer3, &token, &recipient2, &2000_i128, &symbol_short!("w2"),
+        &signer3,
+        &token,
+        &recipient2,
+        &2000_i128,
+        &symbol_short!("w2"),
     );
     client.approve_withdrawal(&signer1, &id2);
 
@@ -856,7 +894,9 @@ fn testnet_drill_full_lifecycle() {
     let pause_id = client.propose_pause(&signer1, &symbol_short!("sec_inc"));
     let pre_pause_depositor = Address::generate(&env);
     token_admin_client.mint(&pre_pause_depositor, &1000);
-    assert!(client.try_deposit(&pre_pause_depositor, &token, &1000).is_ok()); // Should still work before approval
+    assert!(client
+        .try_deposit(&pre_pause_depositor, &token, &1000)
+        .is_ok()); // Should still work before approval
     let balance_after_pre_pause_deposit = deposit_amount + 1000;
 
     // STEP 3: Approve pause
@@ -870,12 +910,19 @@ fn testnet_drill_full_lifecycle() {
 
     // STEP 5: Verify withdrawals blocked
     let withdrawal_result = client.try_create_withdrawal(
-        &signer3, &token, &recipient, &5000_i128, &symbol_short!("blocked"),
+        &signer3,
+        &token,
+        &recipient,
+        &5000_i128,
+        &symbol_short!("blocked"),
     );
     assert!(withdrawal_result.is_err());
 
     // STEP 6: Diagnosis — verify balances are preserved (not silently moved)
-    assert_eq!(token_client.balance(&client.address), balance_after_pre_pause_deposit);
+    assert_eq!(
+        token_client.balance(&client.address),
+        balance_after_pre_pause_deposit
+    );
     assert_eq!(token_client.balance(&recipient), 0);
 
     // STEP 7: Recovery — propose unpause
@@ -891,10 +938,17 @@ fn testnet_drill_full_lifecycle() {
     token_admin_client.mint(&depositor, &1000);
     let new_deposit = 1000;
     client.deposit(&depositor, &token, &new_deposit);
-    assert_eq!(token_client.balance(&client.address), balance_after_pre_pause_deposit + new_deposit);
+    assert_eq!(
+        token_client.balance(&client.address),
+        balance_after_pre_pause_deposit + new_deposit
+    );
 
     let w_id = client.create_withdrawal(
-        &signer1, &token, &recipient, &1000_i128, &symbol_short!("rec"),
+        &signer1,
+        &token,
+        &recipient,
+        &1000_i128,
+        &symbol_short!("rec"),
     );
     client.approve_withdrawal(&signer2, &w_id);
     client.execute_withdrawal(&signer3, &w_id);
@@ -968,7 +1022,6 @@ fn test_all_privileged_actions_emit_identifying_events() {
     // With threshold=1 and signer1 as proposer, unpause auto-approves
     let _ = unpause_id;
 }
-
 
 // ── Signer Change Timelock Tests ──────────────────────────────────────────
 
