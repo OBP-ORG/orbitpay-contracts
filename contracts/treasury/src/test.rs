@@ -625,6 +625,76 @@ fn test_unpause_after_pause() {
     assert_eq!(pause_state, types::PauseState::Unpaused);
 }
 
+#[test]
+fn test_execute_withdrawal_blocked_when_paused() {
+    let (env, admin, client) = setup_env();
+    let signer1 = Address::generate(&env);
+    let signer2 = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    let mut signers = Vec::new(&env);
+    signers.push_back(signer1.clone());
+    signers.push_back(signer2.clone());
+
+    let token_admin = Address::generate(&env);
+    let token_admin_client = create_token_contract(&env, &token_admin);
+    let token = token_admin_client.address.clone();
+    let token_client = create_token_client(&env, &token);
+
+    client.initialize(&admin, &signers, &2);
+
+    let deposit_amount: i128 = 10000;
+    token_admin_client.mint(&client.address, &deposit_amount);
+
+    let withdrawal_amount: i128 = 5000;
+    let proposal_id = client.create_withdrawal(
+        &signer1,
+        &token,
+        &recipient,
+        &withdrawal_amount,
+        &symbol_short!("salary"),
+    );
+
+    // Approve withdrawal so it reaches Approved status
+    client.approve_withdrawal(&signer2, &proposal_id);
+    let request_before = client.get_withdrawal(&proposal_id);
+    assert_eq!(request_before.status, WithdrawalStatus::Approved);
+
+    // 1. Pause the treasury
+    let pause_proposal = client.propose_pause(&signer1, &symbol_short!("incident"));
+    client.approve_pause(&signer2, &pause_proposal);
+    assert_eq!(client.get_pause_state(), types::PauseState::Paused);
+
+    // 2. Attempt execute while paused -> must fail with Paused (Error #15)
+    let err = client.try_execute_withdrawal(&signer1, &proposal_id);
+    assert_eq!(err, Err(Ok(TreasuryError::Paused)));
+
+    // 3. Failed attempt must not change request state, approvals, or token balances
+    let request_during = client.get_withdrawal(&proposal_id);
+    assert_eq!(request_during.status, WithdrawalStatus::Approved);
+    assert_eq!(request_during.approvals.len(), 2);
+    assert_eq!(token_client.balance(&recipient), 0);
+    assert_eq!(token_client.balance(&client.address), deposit_amount);
+
+    // 4. Valid unpause
+    let unpause_proposal = client.propose_unpause(&signer1, &symbol_short!("resolved"));
+    client.approve_unpause(&signer2, &unpause_proposal);
+    assert_eq!(client.get_pause_state(), types::PauseState::Unpaused);
+
+    // 5. Same approved request executes successfully after unpause
+    let exec_res = client.execute_withdrawal(&signer1, &proposal_id);
+    assert_eq!(exec_res, ());
+
+    let request_after = client.get_withdrawal(&proposal_id);
+    assert_eq!(request_after.status, WithdrawalStatus::Executed);
+    assert_eq!(token_client.balance(&recipient), withdrawal_amount);
+    assert_eq!(
+        token_client.balance(&client.address),
+        deposit_amount - withdrawal_amount
+    );
+}
+
+
 // ── Signer-Controlled Upgrade Tests ───────────────────────────────────
 
 #[test]
