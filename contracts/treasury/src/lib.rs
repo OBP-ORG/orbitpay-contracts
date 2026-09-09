@@ -194,6 +194,9 @@ impl TreasuryContract {
         proposal_id: u32,
     ) -> Result<(), TreasuryError> {
         Self::require_initialized(&env)?;
+        if is_paused(&env) {
+            return Err(TreasuryError::Paused);
+        }
         executor.require_auth();
         let mut request =
             get_withdrawal(&env, proposal_id).ok_or(TreasuryError::ProposalNotFound)?;
