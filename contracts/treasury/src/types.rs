@@ -132,3 +132,23 @@ pub struct MigrationParams {
     /// Current signer set version.
     pub signer_set_version: u32,
 }
+
+/// A typed emergency admin change proposal requiring multi-sig approval.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmergencyAdminProposal {
+    /// Unique proposal identifier.
+    pub id: u32,
+    /// The signer who created this emergency admin proposal.
+    pub proposer: Address,
+    /// The nominated new admin address to receive administrative authority.
+    pub new_admin: Address,
+    /// List of signers who have approved this emergency proposal.
+    pub approvals: Vec<Address>,
+    /// Current status of the proposal (Pending, Approved, Executed).
+    pub status: UpgradeStatus,
+    /// Signer set version at time of proposal.
+    pub signer_set_version: u32,
+    /// Ledger timestamp when proposal was created.
+    pub created_at: u64,
+}

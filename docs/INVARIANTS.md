@@ -34,6 +34,7 @@ The following invariants MUST hold true at all times across the OrbitPay smart c
 *   **I-AUTH-6:** Payroll Stream, Vesting, and Governance `execute_upgrade` can ONLY execute a pending upgrade that was proposed with `propose_upgrade`.
 *   **I-AUTH-7:** Treasury `execute_admin_change` can ONLY execute a pending change whose `effective_at` timestamp has passed.
 *   **I-AUTH-8:** No single signer or admin can unilaterally execute withdrawals, upgrades, or admin changes in Treasury.
+*   **I-AUTH-9:** Treasury `execute_emergency_admin_change` MUST assign administrative authority strictly to the nominated and approved `new_admin` (never the transaction executor), cannot execute more than once (terminal state), and strictly rejects non-emergency proposals.
 
 ---
 

@@ -134,8 +134,8 @@ Step 1: Confirm compromise
 
 Step 2: Emergency admin change (if admin compromised)
 ├── Signer.propose_emergency_admin_change(new_admin)
-├── Signers.approve_upgrade(proposal_id)
-└── Signer.execute_emergency_admin_change(new_admin)
+├── Signers.approve_emergency_admin_change(proposal_id) (or approve_upgrade)
+└── Signer.execute_emergency_admin_change(proposal_id) [binds admin to approved new_admin nominee]
 
 Step 3: Rotate signer
 ├── Admin.add_signer(new_signer)

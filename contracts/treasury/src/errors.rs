@@ -68,4 +68,6 @@ pub enum TreasuryError {
     /// The signer set or threshold changed after this withdrawal was created.
     /// Stale withdrawals cannot receive approvals or be executed.
     StaleSignerSet = 23,
+    /// The proposal ID is of an invalid kind for this operation (e.g. non-emergency or legacy unnominated record).
+    InvalidProposalKind = 24,
 }

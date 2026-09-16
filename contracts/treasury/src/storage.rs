@@ -1,6 +1,8 @@
 use soroban_sdk::{contracttype, Address, Env, Vec};
 
-use crate::types::{PauseState, PendingAdminChange, UpgradeProposal, WithdrawalRequest};
+use crate::types::{
+    EmergencyAdminProposal, PauseState, PendingAdminChange, UpgradeProposal, WithdrawalRequest,
+};
 
 pub(crate) const MIN_SIGNER_CHANGE_DELAY: u64 = 24 * 60 * 60; // 1 day in seconds
 
@@ -38,6 +40,8 @@ pub enum DataKey {
     Upgrade(u32),
     /// Upgrade proposal count — stored in Instance storage.
     UpgradeCount,
+    /// Typed emergency admin change proposal — stored in Persistent storage.
+    EmergencyAdmin(u32),
 }
 
 // ── Admin helpers ────────────────────────────────────────────────
@@ -225,6 +229,26 @@ pub fn extend_upgrade_proposal_ttl(env: &Env, id: u32) {
 pub fn extend_pending_admin_change_ttl(env: &Env) {
     env.storage().persistent().extend_ttl(
         &DataKey::PendingAdminChange,
+        PERSISTENT_LIFETIME_THRESHOLD,
+        PERSISTENT_BUMP_AMOUNT,
+    );
+}
+
+// ── Emergency admin change helpers ──────────────────────────────────
+
+pub fn get_emergency_admin_proposal(env: &Env, id: u32) -> Option<EmergencyAdminProposal> {
+    env.storage().persistent().get(&DataKey::EmergencyAdmin(id))
+}
+
+pub fn set_emergency_admin_proposal(env: &Env, id: u32, proposal: &EmergencyAdminProposal) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::EmergencyAdmin(id), proposal);
+}
+
+pub fn extend_emergency_admin_proposal_ttl(env: &Env, id: u32) {
+    env.storage().persistent().extend_ttl(
+        &DataKey::EmergencyAdmin(id),
         PERSISTENT_LIFETIME_THRESHOLD,
         PERSISTENT_BUMP_AMOUNT,
     );

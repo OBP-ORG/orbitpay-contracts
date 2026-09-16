@@ -7,18 +7,19 @@ mod types;
 
 use errors::TreasuryError;
 use storage::{
-    clear_pending_admin_change, extend_instance_ttl, extend_pending_admin_change_ttl,
-    extend_upgrade_proposal_ttl, extend_withdrawal_ttl, get_admin, get_pause_state,
-    get_pending_admin_change, get_proposal_count, get_signer_change_delay, get_signer_set_version,
-    get_signers, get_threshold, get_upgrade_count, get_upgrade_proposal, get_withdrawal, has_admin,
-    increment_signer_set_version, is_paused, set_admin, set_pause_state, set_pending_admin_change,
+    clear_pending_admin_change, extend_emergency_admin_proposal_ttl, extend_instance_ttl,
+    extend_pending_admin_change_ttl, extend_upgrade_proposal_ttl, extend_withdrawal_ttl, get_admin,
+    get_emergency_admin_proposal, get_pause_state, get_pending_admin_change, get_proposal_count,
+    get_signer_change_delay, get_signer_set_version, get_signers, get_threshold, get_upgrade_count,
+    get_upgrade_proposal, get_withdrawal, has_admin, increment_signer_set_version, is_paused,
+    set_admin, set_emergency_admin_proposal, set_pause_state, set_pending_admin_change,
     set_proposal_count, set_signer_change_delay, set_signer_set_version, set_signers,
     set_threshold, set_upgrade_count, set_upgrade_proposal, set_withdrawal,
     MIN_SIGNER_CHANGE_DELAY,
 };
 use types::{
-    PauseState, PendingAdminChange, TreasuryConfig, UpgradeProposal, UpgradeStatus,
-    WithdrawalRequest, WithdrawalStatus,
+    EmergencyAdminProposal, PauseState, PendingAdminChange, TreasuryConfig, UpgradeProposal,
+    UpgradeStatus, WithdrawalRequest, WithdrawalStatus,
 };
 
 #[contract]
@@ -556,6 +557,26 @@ impl TreasuryContract {
             proposal.status = UpgradeStatus::Approved;
         }
         set_upgrade_proposal(&env, proposal_id, &proposal);
+        if let Some(mut eac) = get_emergency_admin_proposal(&env, proposal_id) {
+            if eac.signer_set_version != get_signer_set_version(&env) {
+                return Err(TreasuryError::StaleSignerSet);
+            }
+            let mut already = false;
+            for i in 0..eac.approvals.len() {
+                if eac.approvals.get(i).unwrap() == signer {
+                    already = true;
+                    break;
+                }
+            }
+            if !already {
+                eac.approvals.push_back(signer.clone());
+                if eac.approvals.len() >= threshold {
+                    eac.status = UpgradeStatus::Approved;
+                }
+                set_emergency_admin_proposal(&env, proposal_id, &eac);
+                extend_emergency_admin_proposal_ttl(&env, proposal_id);
+            }
+        }
         extend_upgrade_proposal_ttl(&env, proposal_id);
         extend_instance_ttl(&env);
         env.events()
@@ -654,7 +675,7 @@ impl TreasuryContract {
             return Err(TreasuryError::Unauthorized);
         }
         admin.require_auth();
-        let mut signers = get_signers(&env);
+        let signers = get_signers(&env);
         for i in 0..signers.len() {
             if signers.get(i).unwrap() == new_signer {
                 return Err(TreasuryError::AlreadyASigner);
@@ -760,7 +781,7 @@ impl TreasuryContract {
     pub fn propose_emergency_admin_change(
         env: Env,
         proposer: Address,
-        _new_admin: Address,
+        new_admin: Address,
     ) -> Result<u32, TreasuryError> {
         Self::require_initialized(&env)?;
         proposer.require_auth();
@@ -784,9 +805,21 @@ impl TreasuryContract {
         } else {
             UpgradeStatus::Pending
         };
+        let eac_proposal = EmergencyAdminProposal {
+            id: proposal_id,
+            proposer: proposer.clone(),
+            new_admin: new_admin.clone(),
+            approvals: approvals.clone(),
+            status: status.clone(),
+            signer_set_version: get_signer_set_version(&env),
+            created_at: env.ledger().timestamp(),
+        };
+        set_emergency_admin_proposal(&env, proposal_id, &eac_proposal);
+
+        // Keep mirror UpgradeProposal record with eac description for backward compatibility
         let proposal = UpgradeProposal {
             id: proposal_id,
-            proposer,
+            proposer: proposer.clone(),
             wasm_hash: BytesN::from_array(&env, &[0; 32]),
             description: symbol_short!("eac"),
             approvals,
@@ -796,9 +829,74 @@ impl TreasuryContract {
         };
         set_upgrade_proposal(&env, proposal_id, &proposal);
         set_upgrade_count(&env, proposal_id + 1);
+        extend_emergency_admin_proposal_ttl(&env, proposal_id);
         extend_upgrade_proposal_ttl(&env, proposal_id);
         extend_instance_ttl(&env);
+        env.events()
+            .publish((symbol_short!("eac_p"), proposer, new_admin), proposal_id);
         Ok(proposal_id)
+    }
+
+    pub fn get_emergency_admin_proposal(
+        env: Env,
+        proposal_id: u32,
+    ) -> Option<EmergencyAdminProposal> {
+        get_emergency_admin_proposal(&env, proposal_id)
+    }
+
+    pub fn approve_emergency_admin_change(
+        env: Env,
+        signer: Address,
+        proposal_id: u32,
+    ) -> Result<(), TreasuryError> {
+        Self::require_initialized(&env)?;
+        signer.require_auth();
+        let mut proposal = get_emergency_admin_proposal(&env, proposal_id)
+            .ok_or(TreasuryError::UpgradeProposalNotFound)?;
+        if proposal.signer_set_version != get_signer_set_version(&env) {
+            return Err(TreasuryError::StaleSignerSet);
+        }
+        if proposal.status == UpgradeStatus::Executed {
+            return Err(TreasuryError::UpgradeProposalExecuted);
+        }
+        if proposal.status != UpgradeStatus::Pending {
+            return Err(TreasuryError::UpgradeProposalNotPending);
+        }
+        let signers = get_signers(&env);
+        let mut is_signer = false;
+        for i in 0..signers.len() {
+            if signers.get(i).unwrap() == signer {
+                is_signer = true;
+                break;
+            }
+        }
+        if !is_signer {
+            return Err(TreasuryError::NotASigner);
+        }
+        for i in 0..proposal.approvals.len() {
+            if proposal.approvals.get(i).unwrap() == signer {
+                return Err(TreasuryError::AlreadyApproved);
+            }
+        }
+        proposal.approvals.push_back(signer.clone());
+        let threshold = get_threshold(&env);
+        if proposal.approvals.len() >= threshold {
+            proposal.status = UpgradeStatus::Approved;
+        }
+        set_emergency_admin_proposal(&env, proposal_id, &proposal);
+        if let Some(mut upg) = get_upgrade_proposal(&env, proposal_id) {
+            upg.approvals.push_back(signer.clone());
+            if proposal.status == UpgradeStatus::Approved {
+                upg.status = UpgradeStatus::Approved;
+            }
+            set_upgrade_proposal(&env, proposal_id, &upg);
+            extend_upgrade_proposal_ttl(&env, proposal_id);
+        }
+        extend_emergency_admin_proposal_ttl(&env, proposal_id);
+        extend_instance_ttl(&env);
+        env.events()
+            .publish((symbol_short!("eac_a"), signer), proposal_id);
+        Ok(())
     }
 
     pub fn execute_emergency_admin_change(
@@ -808,10 +906,24 @@ impl TreasuryContract {
     ) -> Result<(), TreasuryError> {
         Self::require_initialized(&env)?;
         executor.require_auth();
-        let proposal = get_upgrade_proposal(&env, proposal_id)
-            .ok_or(TreasuryError::UpgradeProposalNotFound)?;
+        let mut proposal = match get_emergency_admin_proposal(&env, proposal_id) {
+            Some(p) => p,
+            None => {
+                // Rejection strategy for non-emergency or legacy unnominated records:
+                if get_upgrade_proposal(&env, proposal_id).is_some() {
+                    return Err(TreasuryError::InvalidProposalKind);
+                }
+                return Err(TreasuryError::UpgradeProposalNotFound);
+            }
+        };
+        if proposal.status == UpgradeStatus::Executed {
+            return Err(TreasuryError::UpgradeProposalExecuted);
+        }
         if proposal.status != UpgradeStatus::Approved {
             return Err(TreasuryError::UpgradeProposalNotPending);
+        }
+        if proposal.signer_set_version != get_signer_set_version(&env) {
+            return Err(TreasuryError::StaleSignerSet);
         }
         let signers = get_signers(&env);
         let mut found = false;
@@ -824,9 +936,22 @@ impl TreasuryContract {
         if !found {
             return Err(TreasuryError::Unauthorized);
         }
+        let threshold = get_threshold(&env);
+        if proposal.approvals.len() < threshold {
+            return Err(TreasuryError::ProposalNotApproved);
+        }
         let old_admin = get_admin(&env);
-        set_admin(&env, &executor);
+        // Bind emergency admin change strictly to approved nominee, regardless of executor
+        set_admin(&env, &proposal.new_admin);
+        proposal.status = UpgradeStatus::Executed;
+        set_emergency_admin_proposal(&env, proposal_id, &proposal);
+        if let Some(mut upg) = get_upgrade_proposal(&env, proposal_id) {
+            upg.status = UpgradeStatus::Executed;
+            set_upgrade_proposal(&env, proposal_id, &upg);
+            extend_upgrade_proposal_ttl(&env, proposal_id);
+        }
         extend_instance_ttl(&env);
+        extend_emergency_admin_proposal_ttl(&env, proposal_id);
         env.events()
             .publish((symbol_short!("eacd"), executor.clone()), old_admin.clone());
         Ok(())
