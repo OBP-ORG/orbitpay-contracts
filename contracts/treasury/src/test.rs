@@ -732,7 +732,145 @@ fn test_emergency_admin_change_flow() {
 
     // Execute emergency change
     client.execute_emergency_admin_change(&signer1, &proposal_id);
-    assert_eq!(client.get_admin(), signer1);
+    assert_eq!(client.get_admin(), new_admin);
+}
+
+#[test]
+fn test_emergency_admin_assigns_approved_nominee_regardless_of_executor() {
+    let (env, admin, client) = setup_env();
+    let signer1 = Address::generate(&env);
+    let signer2 = Address::generate(&env);
+    let mut signers = Vec::new(&env);
+    signers.push_back(signer1.clone());
+    signers.push_back(signer2.clone());
+
+    client.initialize(&admin, &signers, &2);
+
+    let approved_nominee = Address::generate(&env);
+    let outsider_frontrunner = Address::generate(&env);
+
+    // Signers propose and approve emergency admin change for approved_nominee
+    let proposal_id = client.propose_emergency_admin_change(&signer1, &approved_nominee);
+    client.approve_emergency_admin_change(&signer2, &proposal_id);
+
+    // Outsider attempts to front-run execution to gain admin authority
+    client.execute_emergency_admin_change(&outsider_frontrunner, &proposal_id);
+
+    // Critical security invariant: admin MUST be approved_nominee, NOT outsider_frontrunner!
+    assert_eq!(client.get_admin(), approved_nominee);
+    assert_ne!(client.get_admin(), outsider_frontrunner);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #24)")]
+fn test_emergency_admin_rejects_cross_kind_proposals() {
+    let (env, admin, client) = setup_env();
+    let signer1 = Address::generate(&env);
+    let mut signers = Vec::new(&env);
+    signers.push_back(signer1.clone());
+
+    client.initialize(&admin, &signers, &1);
+
+    // Create a regular WASM upgrade proposal
+    let wasm_hash = soroban_sdk::BytesN::from_array(&env, &[7; 32]);
+    let upgrade_id = client.propose_upgrade(&signer1, &wasm_hash, &symbol_short!("upg"));
+
+    // Attempting to execute a WASM upgrade proposal as an emergency admin change must be rejected
+    client.execute_emergency_admin_change(&signer1, &upgrade_id);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #22)")]
+fn test_emergency_admin_replay_rejected() {
+    let (env, admin, client) = setup_env();
+    let signer1 = Address::generate(&env);
+    let mut signers = Vec::new(&env);
+    signers.push_back(signer1.clone());
+
+    client.initialize(&admin, &signers, &1);
+
+    let new_admin = Address::generate(&env);
+    let proposal_id = client.propose_emergency_admin_change(&signer1, &new_admin);
+
+    // First execution succeeds
+    client.execute_emergency_admin_change(&signer1, &proposal_id);
+    assert_eq!(client.get_admin(), new_admin);
+
+    // Second execution must fail (re-play prevention / terminal state)
+    client.execute_emergency_admin_change(&signer1, &proposal_id);
+}
+
+#[test]
+fn test_emergency_admin_queryable() {
+    let (env, admin, client) = setup_env();
+    let signer1 = Address::generate(&env);
+    let signer2 = Address::generate(&env);
+    let mut signers = Vec::new(&env);
+    signers.push_back(signer1.clone());
+    signers.push_back(signer2.clone());
+
+    client.initialize(&admin, &signers, &2);
+
+    let new_admin = Address::generate(&env);
+    let proposal_id = client.propose_emergency_admin_change(&signer1, &new_admin);
+
+    // Query proposal before approval
+    let proposal = client.get_emergency_admin_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.id, proposal_id);
+    assert_eq!(proposal.proposer, signer1);
+    assert_eq!(proposal.new_admin, new_admin);
+    assert_eq!(proposal.approvals.len(), 1);
+    assert_eq!(proposal.approvals.get(0).unwrap(), signer1);
+    assert_eq!(proposal.status, types::UpgradeStatus::Pending);
+    assert_eq!(proposal.signer_set_version, 0);
+
+    // Approve and query updated state
+    client.approve_emergency_admin_change(&signer2, &proposal_id);
+    let approved_proposal = client.get_emergency_admin_proposal(&proposal_id).unwrap();
+    assert_eq!(approved_proposal.approvals.len(), 2);
+    assert_eq!(approved_proposal.status, types::UpgradeStatus::Approved);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #23)")]
+fn test_emergency_admin_signer_rotation_invalidates_pending() {
+    let (env, admin, client) = setup_env();
+    let signer1 = Address::generate(&env);
+    let signer2 = Address::generate(&env);
+    let signer3 = Address::generate(&env);
+    let mut signers = Vec::new(&env);
+    signers.push_back(signer1.clone());
+    signers.push_back(signer2.clone());
+
+    client.initialize(&admin, &signers, &2);
+
+    let new_admin = Address::generate(&env);
+    let proposal_id = client.propose_emergency_admin_change(&signer1, &new_admin);
+
+    // Rotate signers (admin adds signer3) which increments signer_set_version
+    client.add_signer(&admin, &signer3);
+
+    // Stale proposal approval must be rejected with StaleSignerSet (#23)
+    client.approve_emergency_admin_change(&signer2, &proposal_id);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #17)")]
+fn test_emergency_admin_unmet_threshold_rejected() {
+    let (env, admin, client) = setup_env();
+    let signer1 = Address::generate(&env);
+    let signer2 = Address::generate(&env);
+    let mut signers = Vec::new(&env);
+    signers.push_back(signer1.clone());
+    signers.push_back(signer2.clone());
+
+    client.initialize(&admin, &signers, &2);
+
+    let new_admin = Address::generate(&env);
+    let proposal_id = client.propose_emergency_admin_change(&signer1, &new_admin);
+
+    // Attempt to execute without meeting threshold of 2 approvals
+    client.execute_emergency_admin_change(&signer1, &proposal_id);
 }
 
 // ── Event Emission Tests ───────────────────────────────────────────────
@@ -764,7 +902,7 @@ fn test_migration_preserves_balances_and_state() {
     let (env, admin, client) = setup_env();
     let signer1 = Address::generate(&env);
     let signer2 = Address::generate(&env);
-    let signer3 = Address::generate(&env);
+    let _signer3 = Address::generate(&env);
     let recipient = Address::generate(&env);
     let mut signers = Vec::new(&env);
     signers.push_back(signer1.clone());
@@ -1008,14 +1146,15 @@ fn test_all_privileged_actions_emit_identifying_events() {
     client.update_signer_change_delay(&admin, &new_delay);
 
     // pause_propose event
-    let pause_id = client.propose_pause(&signer1, &symbol_short!("test"));
+    let _pause_id = client.propose_pause(&signer1, &symbol_short!("test"));
 
     // upgrade_proposed event
     let wasm_hash = soroban_sdk::BytesN::from_array(&env, &[4; 32]);
-    let upgrade_id = client.propose_upgrade(&signer1, &wasm_hash, &symbol_short!("upg"));
+    let _upgrade_id = client.propose_upgrade(&signer1, &wasm_hash, &symbol_short!("upg"));
 
     // emergency_admin_changed event
-    client.execute_emergency_admin_change(&signer1, &upgrade_id);
+    let eac_id = client.propose_emergency_admin_change(&signer1, &new_admin);
+    client.execute_emergency_admin_change(&signer1, &eac_id);
 
     // unpause events
     let unpause_id = client.propose_unpause(&signer1, &symbol_short!("unp"));
